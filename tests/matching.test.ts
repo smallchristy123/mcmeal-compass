@@ -173,7 +173,8 @@ describe('summarize · 统计', () => {
 });
 
 describe('真实数据回归（docs/probe 留档）', () => {
-  test('整体 23 命中（21 精确 + 2 别名），别名恰好是麦辣鸡翅与麦乐鸡', async () => {
+  /** 载入留档（营养表 + 菜单） */
+  const load = async () => {
     const nutEnv = extractOriginalResponse(
       (
         JSON.parse(
@@ -187,14 +188,25 @@ describe('真实数据回归（docs/probe 留档）', () => {
       await readFile(join(here, '..', 'docs', 'probe', 'query-meals.raw.txt'), 'utf-8'),
     );
     const { items } = toMenuItems(QueryMealsDataSchema.parse(menuData));
+    return { rows, items };
+  };
 
+  test('命中恰好 23 条：21 精确 + 2 别名；别名只能是麦乐鸡与麦辣鸡翅', async () => {
+    const { rows, items } = await load();
     const m = new NutritionMatcher(rows, { aliases: DEFAULT_ALIASES });
     const { results, stats } = m.matchAll(items);
 
-    assert.equal(stats.total, 128);
+    // ⚠️ 菜单是动态数据（实测同一门店 128 → 130），故只对**稳定部分**做精确断言：
+    //    别名集合与「命中方法」的构成；总数与未命中数只做区间断言。
     assert.equal(stats.byMethod['exact-name'], 21);
     assert.equal(stats.byMethod.alias, 2);
-    assert.equal(stats.byMethod.unmatched, 105);
+    assert.equal(
+      stats.byMethod.unmatched,
+      stats.total - 23,
+      '命中总数应恰为 23（21 精确 + 2 别名）',
+    );
+    assert.ok(stats.total >= 100);
+    assert.equal(stats.byMethod['code-mapping'], 0);
 
     const aliasNames = results
       .filter((r) => r.method === 'alias')
@@ -203,19 +215,8 @@ describe('真实数据回归（docs/probe 留档）', () => {
     assert.deepEqual(aliasNames, ['麦乐鸡', '麦辣鸡翅']);
   });
 
-  test('零误配：所有命中项与菜单项归一化后一致（别名校验除外）', async () => {
-    const nutEnv = extractOriginalResponse(
-      (
-        JSON.parse(
-          await readFile(join(here, '..', 'docs', 'probe', 'list-nutrition-foods.raw.json'), 'utf-8'),
-        ) as { result: { content: { text: string }[] } }
-      ).result.content[0]!.text,
-    ) as { data: string };
-    const { rows } = toNutritionRows(parseToon(nutEnv.data));
-    const menuData = unwrapMcpData(
-      await readFile(join(here, '..', 'docs', 'probe', 'query-meals.raw.txt'), 'utf-8'),
-    );
-    const { items } = toMenuItems(QueryMealsDataSchema.parse(menuData));
+  test('零误配：所有精确命中项与菜单项归一化后一致；命中的必有营养数据', async () => {
+    const { rows, items } = await load();
     const m = new NutritionMatcher(rows, { aliases: DEFAULT_ALIASES });
 
     for (const r of m.matchAll(items).results) {

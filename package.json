@@ -10,8 +10,11 @@
   "scripts": {
     "test": "node --test \"tests/*.test.ts\"",
     "typecheck": "tsc --noEmit",
+    "demo": "node src/cli.ts --offline --top 20",
+    "cli": "node src/cli.ts",
     "measure": "node scripts/measure-matching.ts",
-    "check:combo": "node scripts/check-combo-decomposition.ts"
+    "check:combo": "node scripts/check-combo-decomposition.ts",
+    "capture": "node scripts/capture-fixtures.ts"
   },
   "dependencies": {
     "zod": "^4.6.5"

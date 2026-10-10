@@ -89,11 +89,14 @@ describe('真实营养表留档（160 条）', () => {
 });
 
 describe('toMenuItems · 元→分 只转一次', () => {
-  test('真实菜单留档：128 条、价格已为分', async () => {
+  test('真实菜单留档：价格已为分（单位只转一次）', async () => {
     const data = unwrapMcpData(await readFile(probe('query-meals.raw.txt'), 'utf-8'));
     const { items, missing } = toMenuItems(QueryMealsDataSchema.parse(data));
-    assert.equal(items.length, 128);
-    assert.equal(missing.length, 0);
+    // ⚠️ 菜单是**动态数据**：同一门店两次采集间条目数就可能变（实测 128 → 130）。
+    // 故此处不做精确计数断言，改为结构性断言 + 关键样本核对。
+    assert.ok(items.length >= 100, `菜单项应有上百条，实际 ${items.length}`);
+    assert.equal(missing.length, 0, '分类里引用的 code 都应能在 meals 映射表中找到');
+
     const combo = items.find((i) => i.code === '9900005456');
     assert.equal(combo?.name, '麦辣鸡腿汉堡三件套');
     assert.equal(combo?.currentPrice, 3800); // "38" 元 → 3800 分
