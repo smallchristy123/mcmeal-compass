@@ -9,14 +9,24 @@
  */
 
 import { z } from 'zod';
-import { centsFromApi, centsFromYuan, parseDiffPriceToCents, type Cents } from './money.ts';
+import {
+  centsFromApi,
+  centsFromYuan,
+  parseDiffPriceToCents,
+  cents,
+  type Cents,
+} from './money.ts';
 import type { ToonRow, ToonTable } from './toon.ts';
 
-/** 金额（整数分）的 zod 校验器 */
-export const MoneySchema = z
-  .number()
-  .int()
-  .refine((v) => Number.isSafeInteger(v), { message: '金额必须是安全整数（分）' });
+/**
+ * 金额（整数分）的 zod 校验器。
+ * 用 `z.custom<Cents>` 产出**品牌类型**，让「元/分」混用这类错误在编译期就被拦住——
+ * 若只写 `z.number().int()`，推导出来是裸 number，品牌就白设了（实测踩过）。
+ */
+export const MoneySchema = z.custom<Cents>(
+  (v) => typeof v === 'number' && Number.isInteger(v) && Number.isSafeInteger(v),
+  { message: '金额必须是安全整数（分）' },
+);
 
 /** 可空字符串：外部 JSON 常把缺失写成 null */
 const NullableString = z.string().nullable();
@@ -414,7 +424,7 @@ export function toPriceResult(raw: unknown): PriceResult {
     tablewarePrice: centsFromApi(d.tablewarePrice ?? null),
     originalPrice: centsFromApi(d.originalPrice ?? null),
     discount: centsFromApi(d.discount ?? null),
-    price: centsFromApi(d.price) ?? 0,
+    price: centsFromApi(d.price) ?? cents(0),
     productList: (d.productList ?? []).map((p) => ({
       productCode: p.productCode,
       productName: p.productName,

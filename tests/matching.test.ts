@@ -121,6 +121,13 @@ describe('NutritionMatcher · 四级优先级', () => {
     const r = m.match({ code: 'C6', name: '麦辣鸡翅' }, true); // 有组成本可给 A
     assert.equal(r.confidence, 'B');
     assert.ok(r.notes.some((n) => n.includes('份量')));
+    assert.equal(r.risky, true); // 结构化暴露，供上层判断（勿靠翻 notes 字符串）
+  });
+
+  test('非 risky 命中：risky 为 false', () => {
+    const m = new NutritionMatcher(rows);
+    assert.equal(m.match({ code: 'C9', name: '巨无霸' }).risky, false);
+    assert.equal(m.match({ code: 'D9', name: '不存在' }).risky, false);
   });
 
   test('套餐名不会被误配到同名单品（关键防错）', () => {

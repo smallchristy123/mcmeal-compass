@@ -32,6 +32,11 @@ export interface MatchResult {
   confidence: Confidence;
   /** 本次匹配的说明（用于解释与排查） */
   notes: string[];
+  /**
+   * 该匹配是否含**推断**成分（如按行业默认份量映射）。
+   * 结构化暴露，供上层（如套餐展开）判断可信度——**不要靠翻 notes 字符串**。
+   */
+  risky: boolean;
 }
 
 export interface MatcherOptions {
@@ -143,6 +148,7 @@ export class NutritionMatcher {
       menuCode: menuItem.code,
       menuName: menuItem.name,
       notes,
+      risky: false,
     };
 
     // 优先级 1：代码映射
@@ -182,17 +188,22 @@ export class NutritionMatcher {
     if (rule) {
       const row = this.nutritionIndex.get(rule.nutrition) ?? null;
       if (row) {
-        notes.push(`别名命中：${menuItem.name} → ${rule.nutrition}（${rule.note}）`);
+        if (rule.risky) {
+          notes.push(`别名命中（含份量推断）：${menuItem.name} → ${rule.nutrition}。依据：${rule.note}`);
+        } else {
+          notes.push(`别名命中：${menuItem.name} → ${rule.nutrition}（${rule.note}）`);
+        }
         const base0 = assignConfidence(row, hasComposition);
         // 含推断成分的映射，可信度上限压到 B——诚实标注「此处有推断」
         const confidence: Confidence = rule.risky && base0 === 'A' ? 'B' : base0;
-        if (rule.risky && base0 === 'A') notes.push('该映射含份量推断，可信度由 A 降为 B');
+        if (rule.risky && base0 === 'A') notes.push('可信度由 A 降为 B（因含推断成分）');
         return {
           ...base,
           nutritionName: row.productName,
           nutrition: row,
           method: 'alias',
           confidence,
+          risky: rule.risky ?? false,
         };
       }
       notes.push(`别名指向「${rule.nutrition}」，但营养表中未找到该品名，判为未匹配`);
