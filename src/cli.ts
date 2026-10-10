@@ -244,7 +244,17 @@ export function renderText(
   }
   L.push('');
 
-  const unknown = items.filter((i) => i.confidence === 'D');
+  const ambiguous = items.filter((i) => (i.sizeCandidates?.length ?? 0) >= 2);
+  if (ambiguous.length > 0) {
+    L.push(`【需明确份量后才能给营养 · 共 ${ambiguous.length} 项】`);
+    for (const it of ambiguous) {
+      L.push(`  · ${it.name}　可选份量：${it.sizeCandidates!.map((c) => c.size).join(' / ')}`);
+    }
+    L.push('  （这类不是「不知道」，而是「等你补一个份量」——本项目不替你猜）');
+    L.push('');
+  }
+
+  const unknown = items.filter((i) => i.confidence === 'D' && (i.sizeCandidates?.length ?? 0) < 2);
   if (unknown.length > 0) {
     L.push(`【无法给出营养数字的条目 · 共 ${unknown.length} 项 · 列前 8】`);
     for (const it of unknown.slice(0, 8)) {

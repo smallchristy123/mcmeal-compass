@@ -13,6 +13,7 @@
     "demo": "node src/cli.ts --offline --top 20",
     "cli": "node src/cli.ts",
     "measure": "node scripts/measure-matching.ts",
+    "propose": "node scripts/propose-aliases.ts",
     "check:combo": "node scripts/check-combo-decomposition.ts",
     "capture": "node scripts/capture-fixtures.ts"
   },

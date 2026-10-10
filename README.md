@@ -133,9 +133,10 @@ mcmeal-compass/
 │   └── cli.ts                   # 命令行入口（最薄竖切）
 ├── scripts/                     # 可复现的开发工具
 │   ├── measure-matching.ts      # 匹配质量量尺（离线，读留档）
+│   ├── propose-aliases.ts       # 别名候选提案（离线，只提案不落库）
 │   ├── check-combo-decomposition.ts  # 套餐展开验证（在线，需 Token）
 │   └── capture-fixtures.ts      # 采集离线夹具（在线，需 Token）
-└── tests/                       # 单元测试（node:test，147 个用例）
+└── tests/                       # 单元测试（node:test，151 个用例）
 ```
 
 ## 开发与测试
@@ -148,6 +149,7 @@ npm test            # 单元测试（解析器 / 金额 / 类型契约 / 匹配 
 npm run typecheck   # TypeScript 类型检查
 npm run demo        # 离线演示（不需要 Token）
 npm run measure     # 匹配质量量尺（离线，读留档）
+npm run propose     # 别名候选提案（离线，只提案不落库，供人工审核）
 npm run check:combo # 套餐展开验证（在线，需先配好 MCP Token）
 npm run capture     # 重新采集离线夹具（在线，需 Token）
 ```

@@ -136,12 +136,41 @@ describe('NutritionMatcher · 四级优先级', () => {
     assert.equal(r.method, 'unmatched');
   });
 
-  test('「薯条」有份量歧义，故不设别名 → 未匹配（不替用户猜份量）', () => {
+  test('「薯条」有份量歧义 → 返回候选请用户明确，而非猜一个', () => {
     const m = new NutritionMatcher([nut('中薯条'), nut('大薯条'), nut('小薯条')], {
       aliases: DEFAULT_ALIASES,
     });
     const r = m.match({ code: 'C8', name: '薯条' });
-    assert.equal(r.method, 'unmatched');
+    assert.equal(r.method, 'size-ambiguous');
+    assert.equal(r.nutrition, null, '歧义时不得给营养数字');
+    assert.equal(r.confidence, 'D');
+    assert.deepEqual(r.sizeCandidates?.map((c) => c.size), ['小', '中', '大']);
+    assert.ok(r.notes.some((n) => n.includes('需明确份量')));
+  });
+
+  test('显式指定份量 variant → 命中（计划书 §5.3.3 的 variant 维度）', () => {
+    const m = new NutritionMatcher([nut('中薯条'), nut('大薯条'), nut('小薯条')]);
+    const r = m.match({ code: 'V1', name: '薯条', variant: '大' });
+    assert.equal(r.method, 'variant');
+    assert.equal(r.nutritionName, '大薯条');
+  });
+
+  test('variant 也支持后置量词写法（可乐 + 中杯 → 可乐中杯）', () => {
+    const m = new NutritionMatcher([nut('可乐中杯'), nut('可乐大杯')]);
+    const r = m.match({ code: 'V2', name: '可乐', variant: '中杯' });
+    assert.equal(r.method, 'variant');
+    assert.equal(r.nutritionName, '可乐中杯');
+  });
+
+  test('仅一种份量时不算歧义（仍走未匹配，由别名表决定是否映射）', () => {
+    const m = new NutritionMatcher([nut('麦辣鸡翅-2块')]);
+    assert.equal(m.getSizeCandidates('麦辣鸡翅').length, 0);
+    assert.equal(m.match({ code: 'X', name: '麦辣鸡翅' }).method, 'unmatched');
+  });
+
+  test('可关闭份量歧义识别（detectSizeFamilies: false）', () => {
+    const m = new NutritionMatcher([nut('中薯条'), nut('大薯条')], { detectSizeFamilies: false });
+    assert.equal(m.match({ code: 'Y', name: '薯条' }).method, 'unmatched');
   });
 
   test('重名冲突可被查出', () => {
@@ -191,31 +220,38 @@ describe('真实数据回归（docs/probe 留档）', () => {
     return { rows, items };
   };
 
-  test('命中恰好 23 条：21 精确 + 2 别名；别名只能是麦乐鸡与麦辣鸡翅', async () => {
+  test('真实菜单的命中构成：21 精确 + 4 别名 + 9 份量歧义', async () => {
     const { rows, items } = await load();
     const m = new NutritionMatcher(rows, { aliases: DEFAULT_ALIASES });
     const { results, stats } = m.matchAll(items);
 
-    // ⚠️ 菜单是动态数据（实测同一门店 128 → 130），故只对**稳定部分**做精确断言：
-    //    别名集合与「命中方法」的构成；总数与未命中数只做区间断言。
+    // ⚠️ 菜单是动态数据（实测同一门店 128 → 130），故只对**稳定部分**做精确断言。
     assert.equal(stats.byMethod['exact-name'], 21);
-    assert.equal(stats.byMethod.alias, 2);
-    assert.equal(
-      stats.byMethod.unmatched,
-      stats.total - 23,
-      '命中总数应恰为 23（21 精确 + 2 别名）',
-    );
-    assert.ok(stats.total >= 100);
+    assert.equal(stats.byMethod.alias, 4);
     assert.equal(stats.byMethod['code-mapping'], 0);
+    assert.equal(stats.byMethod.variant, 0);
 
-    const aliasNames = results
-      .filter((r) => r.method === 'alias')
-      .map((r) => r.menuName)
-      .sort();
-    assert.deepEqual(aliasNames, ['麦乐鸡', '麦辣鸡翅']);
+    const aliasNames = new Set(results.filter((r) => r.method === 'alias').map((r) => r.menuName));
+    assert.deepEqual(
+      [...aliasNames].sort((a, b) => a.localeCompare(b, 'zh')),
+      ['100% 苹果汁(盒装)', '麦乐鸡', '麦辣鸡翅', '那么大鸡排（椒盐风味）'].sort((a, b) =>
+        a.localeCompare(b, 'zh'),
+      ),
+    );
+
+    // 份量歧义：这些不是「不知道」，而是「需用户补一个输入」
+    assert.equal(stats.byMethod['size-ambiguous'], 9);
+    const amb = new Set(results.filter((r) => r.method === 'size-ambiguous').map((r) => r.menuName));
+    for (const expect of ['薯条', '可乐', '雪碧', '卡布奇诺', '玉米杯', '怡泉+C']) {
+      assert.ok(amb.has(expect), `「${expect}」应被识别为份量歧义`);
+    }
+
+    // 未命中 = 总数 - 21 - 4 - 9
+    assert.equal(stats.byMethod.unmatched, stats.total - 21 - 4 - 9);
+    assert.ok(stats.total >= 100);
   });
 
-  test('零误配：所有精确命中项与菜单项归一化后一致；命中的必有营养数据', async () => {
+  test('零误配：精确命中项归一化后一致；给出营养的必有营养数据', async () => {
     const { rows, items } = await load();
     const m = new NutritionMatcher(rows, { aliases: DEFAULT_ALIASES });
 
@@ -223,8 +259,13 @@ describe('真实数据回归（docs/probe 留档）', () => {
       if (r.method === 'exact-name') {
         assert.equal(normalizeName(r.menuName), normalizeName(r.nutritionName!));
       }
-      if (r.method !== 'unmatched') {
+      // 份量歧义与未命中都不给营养；其余必须给
+      if (r.method !== 'unmatched' && r.method !== 'size-ambiguous') {
         assert.notEqual(r.nutrition, null, `${r.menuName} 命中但无营养数据`);
+      }
+      if (r.method === 'size-ambiguous') {
+        assert.equal(r.nutrition, null, `${r.menuName} 份量歧义却给了营养`);
+        assert.ok((r.sizeCandidates?.length ?? 0) >= 2, '歧义必须给出 ≥2 个候选');
       }
     }
   });

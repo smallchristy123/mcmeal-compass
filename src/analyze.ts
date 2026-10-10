@@ -16,7 +16,7 @@
 
 import type { MenuItem, MealDetail, NutritionRow } from './schema.ts';
 import type { Cents } from './money.ts';
-import type { Confidence } from './matching.ts';
+import type { Confidence, SizeCandidate } from './matching.ts';
 import { NutritionMatcher, assignConfidence, KEY_NUTRIENTS } from './matching.ts';
 import {
   decomposeMeal,
@@ -45,6 +45,12 @@ export interface AnalyzedItem {
   evidence: NutritionEvidence[];
   /** 套餐中未匹配到营养的组件名 */
   unmatchedComponents: string[];
+  /**
+   * **份量歧义候选**（计划书 §5.3.3 的 variant）：
+   * 有值时表示「该名称对应多种份量，需用户明确后才能给营养」——
+   * 这不是「不知道」，而是「等你补一个输入」。
+   */
+  sizeCandidates?: SizeCandidate[];
   notes: string[];
 }
 
@@ -93,6 +99,7 @@ export function analyzeSingle(item: MenuItem, matcher: NutritionMatcher): Analyz
       ? [{ kind: 'official-single', label: `官方单品营养：${m.nutrition.productName}` }]
       : [],
     unmatchedComponents: [],
+    ...(m.sizeCandidates ? { sizeCandidates: m.sizeCandidates } : {}),
     notes,
   };
 }
