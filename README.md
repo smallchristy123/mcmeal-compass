@@ -6,7 +6,7 @@
 
 - **参赛项目：** 2026 麦当劳程序员创意开发大赛
 - **项目性质：** 独立开发者参赛作品
-- **状态：** 🚧 开发中（v0.1 骨架）
+- **状态：** 🚧 开发中（数据层：TOON 解析 / 类型契约 / 营养匹配已就绪）
 
 > ⚠️ **免责声明：** 本项目为独立开发者参赛作品，**不代表麦当劳官方出品、官方认证或合作关系**。项目输出仅供参考，**不构成医疗、营养或其他专业建议**；餐品信息、价格及供应状态以麦当劳官方渠道的实时结果为准。
 
@@ -71,12 +71,40 @@ mcmeal-compass/
 ├── MCP_INTEGRATION.md           # 实测工具、调用证据与失败降级
 ├── mcp-config.example.json      # 脱敏配置示例（环境变量占位符）
 ├── workbuddy.md                 # WorkBuddy 开发上下文（申领专项奖励时提交）
+├── package.json / tsconfig.json # 工程配置（Node ≥ 22.6，原生 TypeScript）
 ├── LICENSE
 ├── .gitignore
 ├── docs/                        # 架构、数据政策、隐私与安全、演示脚本
-├── src/                         # MCP 适配、TOON 解析、营养匹配、推荐内核
-└── tests/                       # 单元测试与匿名化夹具
+│   ├── API_PROBE_NOTES.md       # MCP 接口实测口径（35 工具、TOON 三坑、计价单位）
+│   ├── MATCHING_NOTES.md        # 营养匹配实测（命中率、失败模式、别名取舍）
+│   └── probe/                   # 脱敏原始留档（真实调用记录，供复现与测试）
+├── src/                         # 核心实现
+│   ├── toon.ts                  # TOON 解析器 + MCP 返回包拆解
+│   ├── money.ts                 # 金额契约（内部一律整数「分」）
+│   ├── schema.ts                # 统一类型契约（zod）
+│   ├── matching.ts              # 营养匹配（四级优先级 + 可信度分层）
+│   └── aliases.ts               # 人工别名表（含风险标注）
+├── scripts/                     # 可复现的开发工具
+│   ├── measure-matching.ts      # 匹配质量量尺（离线，读留档）
+│   └── check-combo-decomposition.ts  # 套餐展开验证（在线，需 Token）
+└── tests/                       # 单元测试（node:test，80 个用例）
 ```
+
+## 开发与测试
+
+> 需要 **Node ≥ 22.6**（依赖原生 TypeScript 支持，无需构建步骤）。
+
+```bash
+npm install
+npm test            # 单元测试（解析器 / 金额 / 类型契约 / 匹配）
+npm run typecheck   # TypeScript 类型检查
+npm run measure     # 匹配质量量尺（离线，读 docs/probe 留档）
+npm run check:combo # 套餐展开验证（在线，需先配好 MCP Token）
+```
+
+**实测口径**（详见 `docs/API_PROBE_NOTES.md`）：MCP 端点 `https://mcp.mcd.cn`（根路径）、
+协议 `2025-06-18`、共 35 个工具；返回为「文档说明 + 原始 JSON」混合文本；
+**计价金额单位为「分」**（`3800` = ¥38.00）。
 
 ## 隐私与安全
 

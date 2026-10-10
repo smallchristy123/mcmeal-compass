@@ -1,0 +1,23 @@
+{
+  "name": "mcmeal-compass",
+  "version": "0.1.0",
+  "private": true,
+  "description": "麦麦营养管家 · McMeal Compass —— 基于麦当劳中国官方 MCP 的可解释营养搭配与实时计价工具",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "test": "node --test \"tests/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "measure": "node scripts/measure-matching.ts",
+    "check:combo": "node scripts/check-combo-decomposition.ts"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^5.9.3"
+  }
+}

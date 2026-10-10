@@ -46,4 +46,4 @@ Below is the response from an API call. To help you understand the data, I've pr
 
 ## Original Response
 
-{"success":true,"code":200,"message":"请求成功","datetime":"2026-10-10 17:11:45","traceId":"ce8a894c80f397af372945d06cef549f","data":{"productOriginalPrice":0,"productPrice":0,"originalPrice":0,"discount":0,"price":0,"productList":[],"takeWayList":[{"code":"eat-in","title":"堂食","subtitle":"店内用餐"},{"code":"take-in-store","title":"外带","subtitle":"店内自提"}]}}
+{"success":true,"code":200,"message":"请求成功","datetime":"2026-10-10 19:45:59","traceId":"4d066154b784dda4e4bcecc96b5fd124","data":{"productOriginalPrice":3800,"productPrice":3800,"originalPrice":3800,"discount":0,"price":3800,"productList":[{"productCode":"9900005456","productName":"麦辣鸡腿汉堡三件套","quantity":1,"originalSubtotal":3800,"subtotal":3800}],"takeWayList":[{"code":"eat-in","title":"堂食","subtitle":"店内用餐"},{"code":"take-in-store","title":"外带","subtitle":"店内自提"}]}}
