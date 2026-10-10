@@ -6,7 +6,7 @@
 
 - **参赛项目：** 2026 麦当劳程序员创意开发大赛
 - **项目性质：** 独立开发者参赛作品
-- **状态：** 🚧 开发中（数据层已通：TOON 解析 / 类型契约 / 营养匹配 / 套餐展开 / 可运行 CLI；推荐内核待做）
+- **状态：** 🚧 开发中（数据层 + 决策内核已通：解析 / 匹配 / 套餐展开 / 推荐 / 解释 / 可运行 CLI；Skill 封装与交付待做）
 
 > ⚠️ **免责声明：** 本项目为独立开发者参赛作品，**不代表麦当劳官方出品、官方认证或合作关系**。项目输出仅供参考，**不构成医疗、营养或其他专业建议**；餐品信息、价格及供应状态以麦当劳官方渠道的实时结果为准。
 
@@ -41,36 +41,38 @@
 
 ```bash
 npm install
-npm run demo          # 输出一份门店营养速览
+npm run demo              # 门店营养速览
+npm run recommend         # 三方案推荐（预算 ¥35）
 ```
 
-输出形如：
+**推荐模式**输出形如：
 
 ```
-门店    麦当劳重庆嘉年华餐厅（3450024）
-菜单    130 项 → 去重后 121 项  其中套餐 20 项 · 单品 101 项
+预算    ¥35.00　·　偏好 均衡优先
 
-【营养可信度分布】
-  B 可追溯组合          34
-  C 部分可知            9
-  D 无法验证           78
-  可用（非 D 级）  43 / 121 = 35.5%
-
-【有官方营养依据的条目 · 按热量升序】
-   1  纯悦                      ¥8.00      0 kcal     0g     0g     0g   B
-   8  脆薯饼                    ¥9.00    146 kcal     1g     9g    14g   B
-  28  麦辣鸡腿汉堡三件套            ¥38.00    921 kcal    28g    36g   116g   B
-  35  枫糖风味厚松饼猪柳蛋堡三件套       ¥32.50   ≥161 kcal    ≥2g    ≥9g   ≥17g   C
+【方案 1 · 预算优先】  圆筒冰淇淋            ¥5.00     93 kcal   蛋白 2g
+【方案 2 · 蛋白质优先】鱼牛汉堡四件套随心选    ¥32.00  1119 kcal  蛋白 41g
+【方案 3 · 均衡优先】  那么大鸡排（椒盐风味）  ¥14.50   385 kcal  蛋白 24g
+  —— 与「预算优先」对照 ——
+  本方案的「蛋白质」比对照多 22.0g（24.0g vs 2.0g，此项更优）
 ```
 
-> `≥` 表示该套餐有组件未匹配到官方营养——此数**仅为已知部分之和**，真实值只会更大。
-> 我们不把部分当全部；未匹配到的条目一律不给数字。
+可用参数：
+
+```bash
+node src/cli.ts --offline --budget 35 --priority protein   # 预算 / protein / balance
+node src/cli.ts --offline --budget 35 --min-protein 25 --avoid-sugary
+node src/cli.ts --offline --budget 35 --declared-allergy   # 触发安全闸
+```
+
+> **安全闸**：一旦声明过敏，首屏即出现「**无法保证任何组合对你安全**」——
+> 本项目不掌握完整过敏原与交叉接触信息，绝不出「安全可食用」的结论。
 
 在线模式（需自行申请 Token）：
 
 ```bash
 export MCD_MCP_TOKEN=你的Token
-node src/cli.ts --city 重庆市 --keyword 观音桥
+node src/cli.ts --city 重庆市 --keyword 观音桥 --budget 35
 ```
 
 ## 如何使用
@@ -117,26 +119,32 @@ mcmeal-compass/
 ├── docs/                        # 架构、数据政策、隐私与安全、演示脚本
 │   ├── API_PROBE_NOTES.md       # MCP 接口实测口径（35 工具、TOON 三坑、计价单位）
 │   ├── MATCHING_NOTES.md        # 营养匹配实测（命中率、失败模式、别名取舍）
+│   ├── DECISION_NOTES.md        # 决策内核口径（硬约束 / 评分 / 三方案 / 解释边界）
 │   ├── RETROSPECTIVE-*.md       # 阶段复盘（远观法）
 │   └── probe/                   # 脱敏原始留档 + 离线演示夹具（真实调用记录）
 ├── src/                         # 核心实现
 │   ├── toon.ts                  # TOON 解析器 + MCP 返回包拆解
 │   ├── money.ts                 # 金额契约（内部一律整数「分」）
 │   ├── schema.ts                # 统一类型契约（zod）
-│   ├── matching.ts              # 营养匹配（四级优先级 + 可信度分层）
+│   ├── matching.ts              # 营养匹配（六级优先级 + 可信度分层 + 份量维度）
 │   ├── aliases.ts               # 人工别名表（含风险标注）
 │   ├── decompose.ts             # 套餐展开与替换校验（缺失不补零、非法替换必拒）
 │   ├── analyze.ts               # 营养分析统一入口（单品直配 / 套餐展开收口）
 │   ├── mcp-client.ts            # MCP 客户端（错误分类 + 有界退避 + Token 脱敏）
 │   ├── order-guard.ts           # 下单安全闸门（未确认绝不执行）
+│   ├── constraints.ts           # 硬约束过滤（含安全闸）
+│   ├── score.ts                 # 帕累托前沿 + 多目标评分（无目标重归一、缺项不填 0）
+│   ├── pricing.ts               # 计价闭环 + 预算硬约束 + 最接近备选
+│   ├── recommend.ts             # 三方案生成与去重（推荐总入口）
+│   ├── explain.ts               # 证据驱动解释（X/Y 由程序算）
 │   ├── fixtures.ts              # 离线夹具加载（无 Token 也能演示）
-│   └── cli.ts                   # 命令行入口（最薄竖切）
+│   └── cli.ts                   # 命令行入口（概览 / 推荐两种模式）
 ├── scripts/                     # 可复现的开发工具
 │   ├── measure-matching.ts      # 匹配质量量尺（离线，读留档）
 │   ├── propose-aliases.ts       # 别名候选提案（离线，只提案不落库）
 │   ├── check-combo-decomposition.ts  # 套餐展开验证（在线，需 Token）
 │   └── capture-fixtures.ts      # 采集离线夹具（在线，需 Token）
-└── tests/                       # 单元测试（node:test，151 个用例）
+└── tests/                       # 单元测试（node:test，187 个用例）
 ```
 
 ## 开发与测试
@@ -145,9 +153,10 @@ mcmeal-compass/
 
 ```bash
 npm install
-npm test            # 单元测试（解析器 / 金额 / 类型契约 / 匹配 / 展开 / 分析 / 安全 / CLI）
+npm test            # 单元测试（解析 / 金额 / 契约 / 匹配 / 展开 / 分析 / 安全 / 决策 / CLI）
 npm run typecheck   # TypeScript 类型检查
-npm run demo        # 离线演示（不需要 Token）
+npm run demo        # 离线演示：门店营养速览（不需要 Token）
+npm run recommend   # 离线演示：三方案推荐（不需要 Token）
 npm run measure     # 匹配质量量尺（离线，读留档）
 npm run propose     # 别名候选提案（离线，只提案不落库，供人工审核）
 npm run check:combo # 套餐展开验证（在线，需先配好 MCP Token）

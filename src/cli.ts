@@ -19,6 +19,10 @@ import { McpClient, McpError } from './mcp-client.ts';
 import { formatCents } from './money.ts';
 import { parseToon } from './toon.ts';
 import { toNutritionRows, type MenuItem, type MealDetail, type NutritionRow } from './schema.ts';
+import type { Priority } from './constraints.ts';
+import { recommendForMenu, type Recommendation } from './recommend.ts';
+import type { Pricer } from './pricing.ts';
+import type { PriceResult } from './schema.ts';
 import { pathToFileURL } from 'node:url';
 
 // ─────────────────── 参数解析 ───────────────────
@@ -31,10 +35,25 @@ interface CliOptions {
   top: number;
   sort: 'kcal' | 'protein' | 'price';
   json: boolean;
+  /** 给定预算即进入「推荐模式」 */
+  budget?: number;
+  priority: Priority;
+  targetKcal?: number;
+  minProtein?: number;
+  avoidSugary: boolean;
+  declaredAllergy: boolean;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
-  const opts: CliOptions = { offline: false, top: 15, sort: 'kcal', json: false };
+  const opts: CliOptions = {
+    offline: false,
+    top: 15,
+    sort: 'kcal',
+    json: false,
+    priority: 'balance',
+    avoidSugary: false,
+    declaredAllergy: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
@@ -44,13 +63,22 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--city': opts.city = next(); break;
       case '--keyword': opts.keyword = next(); break;
       case '--top': opts.top = Number(next() ?? 15) || 15; break;
+      case '--budget': opts.budget = Number(next()); break;
+      case '--target-kcal': opts.targetKcal = Number(next()); break;
+      case '--min-protein': opts.minProtein = Number(next()); break;
+      case '--avoid-sugary': opts.avoidSugary = true; break;
+      case '--declared-allergy': opts.declaredAllergy = true; break;
+      case '--priority': {
+        const v = next();
+        if (v === 'budget' || v === 'protein' || v === 'balance') opts.priority = v;
+        break;
+      }
       case '--sort': {
         const v = next();
         if (v === 'protein' || v === 'price' || v === 'kcal') opts.sort = v;
         break;
       }
       case '--json': opts.json = true; break;
-      case '--help': case '-h': opts.json = false; argv = []; opts.top = -1; break;
       default: break;
     }
   }
@@ -58,15 +86,26 @@ function parseArgs(argv: readonly string[]): CliOptions {
 }
 
 const USAGE = `
-麦麦营养管家 · 门店营养速览
+麦麦营养管家 · 门店营养速览 / 预算推荐
 
-  node src/cli.ts --offline                     用离线夹具（无需 Token）
-  node src/cli.ts --city 重庆市 --keyword 观音桥  在线模式（需 MCD_MCP_TOKEN）
+  概览模式
+    node src/cli.ts --offline                      用离线夹具（无需 Token）
+    node src/cli.ts --city 重庆市 --keyword 观音桥   在线模式（需 MCD_MCP_TOKEN）
+
+  推荐模式（给出 --budget 即进入）
+    node src/cli.ts --offline --budget 35 --priority protein
+    node src/cli.ts --offline --budget 35 --min-protein 25 --avoid-sugary
 
 可选：
   --store <code>     直接指定门店编码
-  --top <n>          展示前 n 条（默认 15）
-  --sort kcal|protein|price   排序依据（默认 kcal）
+  --top <n>          概览展示前 n 条（默认 15）
+  --sort kcal|protein|price   概览排序（默认 kcal）
+  --budget <元>      预算（给此项即输出三方案）
+  --priority budget|protein|balance   偏好（默认 balance）
+  --target-kcal <n>  本餐热量目标（不填则不参与评分）
+  --min-protein <g>  最低蛋白质
+  --avoid-sugary     避开含糖饮料
+  --declared-allergy 已声明过敏（触发安全闸：不再声称「安全」）
   --json             输出 JSON
 `;
 
@@ -79,6 +118,8 @@ interface Sourced {
   items: MenuItem[];
   nutritionRows: NutritionRow[];
   loadDetail: (code: string) => Promise<MealDetail | null>;
+  /** 官方计价器；离线模式返回 null（上层会如实标注「未核实实付」） */
+  price: Pricer;
   modeLabel: string;
 }
 
@@ -92,6 +133,9 @@ async function loadFromFixtures(): Promise<Sourced> {
     items: b.menuItems,
     nutritionRows: b.nutritionRows,
     loadDetail: fixtureDetailLoader(b),
+    // 离线夹具里只有一份计价留档，不足以覆盖所有候选；
+    // 故返回 null，让计价环节**如实降级为「菜单价、未核实实付」**（而不是假装已核实）
+    price: async () => null,
     modeLabel: '离线夹具（无需 Token）',
   };
 }
@@ -142,6 +186,24 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
     }
   };
 
+  const priceCache = new Map<string, PriceResult | null>();
+  const price: Pricer = async (item) => {
+    if (priceCache.has(item.code)) return priceCache.get(item.code) ?? null;
+    try {
+      const p = await client.calculatePrice({
+        storeCode: storeCode!,
+        orderType: 1,
+        beType: 1,
+        items: [{ productCode: item.code, quantity: 1 }],
+      });
+      priceCache.set(item.code, p);
+      return p;
+    } catch {
+      priceCache.set(item.code, null);
+      return null;
+    }
+  };
+
   return {
     storeCode,
     storeName,
@@ -149,6 +211,7 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
     items,
     nutritionRows,
     loadDetail,
+    price,
     modeLabel: `实时调用（mcd-mcp ${info.version ?? ''}）`.trim(),
   };
 }
@@ -306,6 +369,91 @@ async function main(): Promise<void> {
 
 let lastTick = 0;
 
+/** 渲染三方案（决策内核的可读出口） */
+export function renderRecommendation(rec: Recommendation, src: Sourced, opts: CliOptions): string {
+  const L: string[] = [];
+  const line = '═'.repeat(64);
+  const PR_LABEL: Record<Priority, string> = { budget: '预算优先', protein: '蛋白质优先', balance: '均衡优先' };
+
+  L.push(line);
+  L.push('麦麦营养管家 · 三方案推荐');
+  L.push(line);
+  L.push(`门店    ${src.storeName}${src.storeCode ? `（${src.storeCode}）` : ''}`);
+  L.push(`数据    ${src.capturedAt}　·　${src.modeLabel}`);
+  L.push(`预算    ¥${(opts.budget ?? 0).toFixed(2)}　·　偏好 ${PR_LABEL[opts.priority]}`);
+  const extras: string[] = [];
+  if (opts.minProtein !== undefined) extras.push(`最低蛋白 ${opts.minProtein}g`);
+  if (opts.targetKcal !== undefined) extras.push(`热量目标 ${opts.targetKcal} kcal`);
+  if (opts.avoidSugary) extras.push('避开含糖饮料');
+  if (extras.length) L.push(`条件    ${extras.join('　·　')}`);
+  L.push('');
+
+  if (rec.safetyNotice) {
+    L.push('⚠️ 【安全提示 · 必读】');
+    L.push(`  ${rec.safetyNotice}`);
+    L.push('');
+  }
+
+  if (rec.plans.length === 0) {
+    L.push('【结果】');
+    L.push(`  ${rec.shortfallNote ?? '没有可用方案。'}`);
+    if (rec.overBudgetNote) {
+      L.push('');
+      L.push('【备选（需你明确同意才算数）】');
+      L.push(`  ${rec.overBudgetNote}`);
+    }
+    L.push('');
+  } else {
+    rec.plans.forEach((p, i) => {
+      const it = p.priced.item;
+      const t = it.totals;
+      L.push(`【方案 ${i + 1} · ${p.label}】`);
+      L.push(`  名称    ${it.name}（${it.kind === 'combo' ? `套餐·${it.evidence.length - 1} 项组成` : '单品'}）`);
+      L.push(
+        `  实付    ${p.priced.effectivePrice === null ? '—' : formatCents(p.priced.effectivePrice)}` +
+          `${p.priced.priceSource === 'official' ? '（官方计价已核实）' : '（菜单价，未核实实付）'}`,
+      );
+      const fmt = (v: number | null, u: string, complete = true) =>
+        v === null ? '—' : `${complete ? '' : '≥'}${v}${u}`;
+      L.push(
+        `  营养    ${fmt(t.energyKcal.value, ' kcal', t.energyKcal.complete)}　·　` +
+          `蛋白 ${fmt(t.protein.value, 'g', t.protein.complete)}　·　` +
+          `脂肪 ${fmt(t.fat.value, 'g', t.fat.complete)}　·　` +
+          `碳水 ${fmt(t.carbohydrate.value, 'g', t.carbohydrate.complete)}　·　` +
+          `钠 ${fmt(t.sodium.value, 'mg', t.sodium.complete)}（可信度 ${it.confidence}）`,
+      );
+      L.push(`  理由    ${p.reason}`);
+      L.push(
+        `  分量    ${[
+          p.score.budgetScore === null ? '价格—' : `价格 ${(p.score.budgetScore * 100).toFixed(0)}`,
+          p.score.proteinScore === null ? '蛋白—' : `蛋白 ${(p.score.proteinScore * 100).toFixed(0)}`,
+          p.score.energyFit === null ? '热量吻合—' : `热量吻合 ${(p.score.energyFit * 100).toFixed(0)}`,
+        ].join(' · ')}（综合 ${(p.score.total * 100).toFixed(0)}/100）`,
+      );
+      L.push(`  依据    ${p.explanation.evidenceIds.join('　')}`);
+      for (const s of p.explanation.statements) L.push(`  ${s}`);
+      L.push('');
+    });
+  }
+
+  if (rec.shortfallNote && rec.plans.length > 0) {
+    L.push(`【说明】${rec.shortfallNote}`);
+    L.push('');
+  }
+  if (rec.notes.length > 0) {
+    L.push('【推导过程】');
+    for (const n of rec.notes) L.push(`  · ${n}`);
+    L.push('');
+  }
+
+  L.push('说明：');
+  L.push('  · 所有数值均由程序计算；缺失一律标 — 或 ≥，绝不填 0 冒充。');
+  L.push('  · 权重为产品内部启发式，**不是医学标准**，也不构成营养建议。');
+  L.push('  · 官方计价未取得时以菜单价计，并明确标注「未核实实付」。');
+  L.push(line);
+  return L.join('\n');
+}
+
 /**
  * 跑分析并产出最终输出文本。
  * **导出**以便测试进程内直接调用（本沙箱禁止 spawn 子进程，子进程测试跑不了）。
@@ -320,6 +468,47 @@ export async function runAnalysis(
     concurrency: 6,
     ...(onProgress ? { onProgress } : {}),
   });
+
+  // 推荐模式
+  if (opts.budget !== undefined) {
+    const { recommendation } = await recommendForMenu(
+      items,
+      {
+        budgetCny: opts.budget,
+        orderMode: 'pickup',
+        storeCode: src.storeCode,
+        preferences: {
+          priority: opts.priority,
+          avoidSugaryDrinks: opts.avoidSugary,
+          energyTargetKcal: opts.targetKcal ?? null,
+          minimumProteinGrams: opts.minProtein ?? null,
+        },
+        safety: { allergyDeclared: opts.declaredAllergy },
+      },
+      src.price,
+    );
+    if (opts.json) {
+      return `${JSON.stringify(
+        {
+          store: { code: src.storeCode, name: src.storeName },
+          capturedAt: src.capturedAt,
+          mode: src.modeLabel,
+          request: {
+            budgetCny: opts.budget,
+            priority: opts.priority,
+            energyTargetKcal: opts.targetKcal ?? null,
+            minimumProteinGrams: opts.minProtein ?? null,
+            avoidSugaryDrinks: opts.avoidSugary,
+            declaredAllergy: opts.declaredAllergy,
+          },
+          recommendation,
+        },
+        null,
+        2,
+      )}\n`;
+    }
+    return `${renderRecommendation(recommendation, src, opts)}\n`;
+  }
 
   if (opts.json) {
     return `${JSON.stringify(
@@ -339,7 +528,16 @@ export async function runAnalysis(
 
 /** 供测试：直接跑离线模式并返回输出 */
 export async function runOfflineForTest(args: Partial<CliOptions> = {}): Promise<string> {
-  const opts: CliOptions = { offline: true, top: 15, sort: 'kcal', json: false, ...args };
+  const opts: CliOptions = {
+    offline: true,
+    top: 15,
+    sort: 'kcal',
+    json: false,
+    priority: 'balance',
+    avoidSugary: false,
+    declaredAllergy: false,
+    ...args,
+  };
   const src = await loadFromFixtures();
   return runAnalysis(src, opts);
 }
