@@ -23,6 +23,7 @@ export type MatchMethod =
   | 'alias'
   | 'variant'
   | 'size-ambiguous'
+  | 'flavor-ambiguous'
   | 'unmatched';
 
 /** 数据可信度分层（A 最高，D 最低；D 不给营养数字） */
@@ -33,6 +34,14 @@ export interface SizeCandidate {
   /** 份量标识，如「中」「大」「2块」 */
   size: string;
   /** 该份量在营养表里的品名 */
+  productName: string;
+}
+
+/** 一个「口味候选」（与份量同属 `variant` 维度：让用户补一个输入，而不是替他猜） */
+export interface FlavorCandidate {
+  /** 口味标识，如「朱古力」「草莓」 */
+  flavor: string;
+  /** 该口味在营养表里的品名 */
   productName: string;
 }
 
@@ -57,6 +66,11 @@ export interface MatchResult {
    * 请用户明确份量，**而不是替其猜一个**。
    */
   sizeCandidates?: SizeCandidate[];
+  /**
+   * **口味歧义**（与份量同类问题：`新地` → 朱古力/草莓，`派` → 香芋/菠萝）。
+   * 同样**列候选请用户选**，绝不猜。
+   */
+  flavorCandidates?: FlavorCandidate[];
 }
 
 /** 匹配的键（含份量维度） */
@@ -147,6 +161,42 @@ export function splitSize(normalizedName: string): SizeSplit | null {
   return null;
 }
 
+/**
+ * 口味词表（同样服务于 `variant` 维度：同一物的不同口味是**不同的东西**，不能互相顶替）。
+ * 依据 = 实测营养表中的口味写法（朱古力/草莓新地、香芋/菠萝派、奥利奥/草莓麦旋风…）。
+ */
+const FLAVOR_WORDS = [
+  '朱古力','巧克力','草莓','香芋','菠萝','奥利奥','抹茶','蓝莓','芒果','荔枝','白桃','蜜桃',
+  '柠檬','桂花','黑糖','焦糖','玫瑰','青梅','提拉米苏','奶油','芝士','榴莲','椰子','红豆','原味',
+] as const;
+
+/** 修饰词：不影响「是什么」，仅用于归族（如「经典麦旋风」的「经典」） */
+// ⚠️ 只收「确证是修饰」的词。绝不能放「香」「脆」这类会误拆的名字成分——
+// 例如「香辣鸡腿堡」若把「香」当修饰剥掉，会与「辣鸡腿堡」混为一族，属于制造歧义。
+const STYLE_WORDS = ['经典', '风味', '新款', '新品', '港式', '厚切'] as const;
+
+/** 去掉份量、口味、修饰词后的**核心名**，用于判断「同族多口味」 */
+export function coreFamilyOf(normalizedName: string): { core: string; flavor: string | null } {
+  let s = normalizedName;
+  let flavor: string | null = null;
+
+  const split = splitSize(s);
+  if (split) s = split.family;
+
+  for (const f of FLAVOR_WORDS) {
+    if (s.includes(f)) {
+      flavor = f;
+      s = s.split(f).join('');
+      break;
+    }
+  }
+  for (const st of STYLE_WORDS) {
+    if (s.startsWith(st) && s.length > st.length) s = s.slice(st.length);
+    if (s.endsWith(st) && s.length > st.length) s = s.slice(0, -st.length);
+  }
+  return { core: s, flavor };
+}
+
 /** 判断营养数据是否「齐全到足以支撑结论」 */
 export function isNutritionComplete(
   n: NutritionRow | null,
@@ -193,6 +243,8 @@ export class NutritionMatcher {
   private readonly nutritionIndex = new Map<string, NutritionRow>(); // 原品名 → row
   /** 族名 → 该族下各份量的条目 */
   private readonly sizeFamilies = new Map<string, { size: string; productName: string }[]>();
+  /** 核心名 → 该核心下各口味的条目 */
+  private readonly flavorFamilies = new Map<string, { flavor: string; productName: string }[]>();
   private readonly detectSizeFamilies: boolean;
 
   constructor(nutritionRows: readonly NutritionRow[], options: MatcherOptions = {}) {
@@ -206,7 +258,10 @@ export class NutritionMatcher {
     this.codeMapping = options.codeMapping ?? {};
     this.aliasIndex = buildAliasIndex(options.aliases ?? [], normalizeName);
     this.detectSizeFamilies = options.detectSizeFamilies ?? true;
-    if (this.detectSizeFamilies) this.buildSizeFamilies();
+    if (this.detectSizeFamilies) {
+      this.buildSizeFamilies();
+      this.buildFlavorFamilies();
+    }
   }
 
   /**
@@ -224,6 +279,32 @@ export class NutritionMatcher {
       arr.push({ size, productName: row.productName });
       this.sizeFamilies.set(family, arr);
     }
+  }
+
+  /**
+   * 构建「口味族」索引：把同核心、不同口味的营养条目归到一族。
+   * 例：朱古力新地 / 草莓新地 / 迷你朱古力新地 → 核心「新地」，口味 {朱古力, 草莓}。
+   */
+  private buildFlavorFamilies(): void {
+    for (const row of this.nutritionIndex.values()) {
+      const norm = normalizeName(row.productName);
+      const { core, flavor } = coreFamilyOf(norm);
+      if (core === '' || flavor === null) continue;
+      const arr = this.flavorFamilies.get(core) ?? [];
+      arr.push({ flavor, productName: row.productName });
+      this.flavorFamilies.set(core, arr);
+    }
+  }
+
+  /** 取某名称对应的口味候选（≥2 种不同口味才算歧义） */
+  getFlavorCandidates(nameOrFamily: string): FlavorCandidate[] {
+    const { core } = coreFamilyOf(normalizeName(nameOrFamily));
+    const fam = this.flavorFamilies.get(core);
+    if (!fam) return [];
+    const byFlavor = new Map<string, string>();
+    for (const f of fam) if (!byFlavor.has(f.flavor)) byFlavor.set(f.flavor, f.productName);
+    if (byFlavor.size < 2) return [];
+    return [...byFlavor.entries()].map(([flavor, productName]) => ({ flavor, productName }));
   }
 
   /** 取某名称对应的份量候选（≥2 个才算歧义） */
@@ -346,7 +427,45 @@ export class NutritionMatcher {
       notes.push(`别名指向「${rule.nutrition}」，但营养表中未找到该品名，判为未匹配`);
     }
 
-    // 优先级 5：**份量歧义**——同名有多个份量，请用户明确，而非替他猜一个
+    // 优先级 4.5：显式指定了 variant 但按份量没配上 → 再按**口味**组合试一次
+    if (menuItem.variant) {
+      const v = normalizeName(menuItem.variant);
+      const { core } = coreFamilyOf(key);
+      for (const composed of [`${v}${core}`, `${core}${v}`]) {
+        const row = this.byNormalizedName.get(composed);
+        if (row) {
+          notes.push(`按指定口味「${menuItem.variant}」命中：${row.productName}`);
+          return {
+            ...base,
+            nutritionName: row.productName,
+            nutrition: row,
+            method: 'variant',
+            confidence: assignConfidence(row, hasComposition),
+          };
+        }
+      }
+    }
+
+    // 优先级 5：**口味歧义**——同族多口味，请用户明确，而非替他猜一个
+    if (this.detectSizeFamilies) {
+      const flavors = this.getFlavorCandidates(key);
+      if (flavors.length >= 2) {
+        notes.push(
+          `该名称在官方营养表里对应 ${flavors.length} 种口味（${flavors.map((f) => f.flavor).join('/')}），` +
+            '**需明确口味后才能给出营养**——此处不替用户猜测',
+        );
+        return {
+          ...base,
+          nutritionName: null,
+          nutrition: null,
+          method: 'flavor-ambiguous',
+          confidence: 'D',
+          flavorCandidates: flavors,
+        };
+      }
+    }
+
+    // 优先级 5.5：**份量歧义**——同名有多个份量，请用户明确，而非替他猜一个
     if (this.detectSizeFamilies) {
       const candidates = this.getSizeCandidates(key);
       if (candidates.length >= 2) {
@@ -393,6 +512,7 @@ export function summarize(results: readonly MatchResult[]): MatcherStats {
     'exact-name': 0,
     alias: 0,
     variant: 0,
+    'flavor-ambiguous': 0,
     'size-ambiguous': 0,
     unmatched: 0,
   };

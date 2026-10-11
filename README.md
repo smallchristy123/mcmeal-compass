@@ -148,6 +148,8 @@ mcmeal-compass/
 │   ├── aliases.ts               # 人工别名表（含风险标注）
 │   ├── decompose.ts             # 套餐展开与替换校验（缺失不补零、非法替换必拒）
 │   ├── analyze.ts               # 营养分析统一入口（单品直配 / 套餐展开收口）
+│   ├── validate.ts              # kJ/kcal 换算一致性校验（异常即降级，不入完整推荐）
+│   ├── freshness.ts             # 数据新鲜度 TTL（过期只能作历史样例）
 │   ├── mcp-client.ts            # MCP 客户端（错误分类 + 有界退避 + Token 脱敏）
 │   ├── order-guard.ts           # 下单安全闸门（未确认绝不执行）
 │   ├── constraints.ts           # 硬约束过滤（含安全闸）
@@ -163,7 +165,7 @@ mcmeal-compass/
 │   ├── propose-aliases.ts       # 别名候选提案（离线，只提案不落库）
 │   ├── check-combo-decomposition.ts  # 套餐展开验证（在线，需 Token）
 │   └── capture-fixtures.ts      # 采集（写 work/captures/，**不碰** fixtures/；在线，需 Token）
-└── tests/                       # 单元测试（node:test，192 个用例）
+└── tests/                       # 单元测试（node:test，235 个用例）
 ```
 
 ## 开发与测试
@@ -181,6 +183,7 @@ npm run measure     # 匹配质量量尺（离线，读 fixtures/ 快照）
 npm run verify:fixtures  # 校验快照与 manifest 的 SHA-256 / 条数是否一致
 npm run propose     # 别名候选提案（离线，只提案不落库，供人工审核）
 npm run check:combo # 套餐展开验证（在线，需先配好 MCP Token）
+npm run cli -- --variant 薯条=中   # 显式指定份量/口味（歧义项必须由你指定，我们不猜）
 npm run capture     # 采集新数据 → work/captures/（在线，需 Token；**不会**改动测试基线）
 ```
 

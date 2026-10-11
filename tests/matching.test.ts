@@ -249,8 +249,16 @@ describe('真实数据回归（fixtures/ 快照留档）', () => {
       assert.ok(amb.has(expect), `「${expect}」应被识别为份量歧义`);
     }
 
-    // 未命中 = 总数 - 21 - 4 - 9
-    assert.equal(stats.byMethod.unmatched, stats.total - 21 - 4 - 9);
+    // 口味歧义：与份量同类——**不同口味是不同的东西**，列候选请用户选
+    assert.equal(stats.byMethod['flavor-ambiguous'], 3);
+    const flav = new Set(results.filter((r) => r.method === 'flavor-ambiguous').map((r) => r.menuName));
+    assert.deepEqual(
+      [...flav].sort((a, b) => a.localeCompare(b, 'zh')),
+      ['新地', '派', '经典麦旋风'].sort((a, b) => a.localeCompare(b, 'zh')),
+    );
+
+    // 未命中 = 总数 − 21 精确 − 4 别名 − 9 份量歧义 − 3 口味歧义
+    assert.equal(stats.byMethod.unmatched, stats.total - 21 - 4 - 9 - 3);
     assert.ok(stats.total >= 100);
   });
 
@@ -262,13 +270,18 @@ describe('真实数据回归（fixtures/ 快照留档）', () => {
       if (r.method === 'exact-name') {
         assert.equal(normalizeName(r.menuName), normalizeName(r.nutritionName!));
       }
-      // 份量歧义与未命中都不给营养；其余必须给
-      if (r.method !== 'unmatched' && r.method !== 'size-ambiguous') {
+      // 「未命中」与两类「歧义」都不给营养（给的是候选）；其余必须给
+      const noNutrition = ['unmatched', 'size-ambiguous', 'flavor-ambiguous'] as const;
+      if (!(noNutrition as readonly string[]).includes(r.method)) {
         assert.notEqual(r.nutrition, null, `${r.menuName} 命中但无营养数据`);
       }
       if (r.method === 'size-ambiguous') {
         assert.equal(r.nutrition, null, `${r.menuName} 份量歧义却给了营养`);
         assert.ok((r.sizeCandidates?.length ?? 0) >= 2, '歧义必须给出 ≥2 个候选');
+      }
+      if (r.method === 'flavor-ambiguous') {
+        assert.equal(r.nutrition, null, `${r.menuName} 口味歧义却给了营养`);
+        assert.ok((r.flavorCandidates?.length ?? 0) >= 2, '口味歧义必须给出 ≥2 个候选');
       }
     }
   });

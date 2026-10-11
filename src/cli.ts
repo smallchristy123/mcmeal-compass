@@ -22,12 +22,15 @@ import { toNutritionRows, type MenuItem, type MealDetail, type NutritionRow } fr
 import type { Priority } from './constraints.ts';
 import { recommendForMenu, type Recommendation } from './recommend.ts';
 import { buildArgsSummary, hashResponse, type PriceAttempt, type Pricer } from './pricing.ts';
+import { freshnessOf } from './freshness.ts';
 import { pathToFileURL } from 'node:url';
 
 // ─────────────────── 参数解析 ───────────────────
 
 interface CliOptions {
   offline: boolean;
+  /** 显式指定的份量/口味：菜单名 → 取值 */
+  variants: Record<string, string>;
   store?: string;
   city?: string;
   keyword?: string;
@@ -46,6 +49,7 @@ interface CliOptions {
 function parseArgs(argv: readonly string[]): CliOptions {
   const opts: CliOptions = {
     offline: false,
+    variants: {},
     top: 15,
     sort: 'kcal',
     json: false,
@@ -58,6 +62,12 @@ function parseArgs(argv: readonly string[]): CliOptions {
     const next = () => argv[++i];
     switch (a) {
       case '--offline': opts.offline = true; break;
+      case '--variant': {
+        const pair = next() ?? '';
+        const idx = pair.indexOf('=');
+        if (idx > 0) opts.variants[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+        break;
+      }
       case '--store': opts.store = next(); break;
       case '--city': opts.city = next(); break;
       case '--keyword': opts.keyword = next(); break;
@@ -104,6 +114,7 @@ const USAGE = `
   --target-kcal <n>  本餐热量目标（不填则不参与评分）
   --min-protein <g>  最低蛋白质
   --avoid-sugary     避开含糖饮料
+  --variant <名=值>  显式指定份量/口味，可重复；例：--variant 薯条=中 --variant 新地=朱古力
   --declared-allergy 已声明过敏（触发安全闸：不再声称「安全」）
   --json             输出 JSON
 
@@ -315,8 +326,19 @@ export function renderText(
   L.push(line);
   L.push(`门店    ${src.storeName}${src.storeCode ? `（${src.storeCode}）` : ''}`);
   L.push(`数据    ${src.capturedAt}　·　${src.modeLabel}`);
+  {
+    // ⚠️ 新鲜度：过期的数据**只能作历史样例**，不得以"当前可售/实时价格"的口吻输出
+    const f = freshnessOf(src.capturedAt, 'menu');
+    L.push(`时效    ${f.note}`);
+    if (f.status !== 'fresh') {
+      L.push('⛔ 上方数据**不是**「当前可售」状态，也**不是**实时价格——仅作历史样例演示。');
+    }
+  }
   L.push(`菜单    ${src.items.length} 项 → 去重后 ${summary.total} 项`);
   L.push(`        其中套餐 ${summary.combos} 项 · 单品 ${summary.singles} 项`);
+  if (summary.dataAnomalies > 0) {
+    L.push(`        ⚠️ 另有 ${summary.dataAnomalies} 项因**营养数据异常**（如 kJ/kcal 换算不符）被排除在完整推荐之外`);
+  }
   L.push('');
 
   L.push('【营养可信度分布】');
@@ -361,17 +383,30 @@ export function renderText(
   }
   L.push('');
 
-  const ambiguous = items.filter((i) => (i.sizeCandidates?.length ?? 0) >= 2);
-  if (ambiguous.length > 0) {
-    L.push(`【需明确份量后才能给营养 · 共 ${ambiguous.length} 项】`);
-    for (const it of ambiguous) {
+  const sizedItems = items.filter((i) => (i.sizeCandidates?.length ?? 0) >= 2);
+  const flavoredItems = items.filter((i) => (i.flavorCandidates?.length ?? 0) >= 2);
+  if (sizedItems.length > 0) {
+    L.push(`【需明确份量后才能给营养 · 共 ${sizedItems.length} 项】`);
+    for (const it of sizedItems) {
       L.push(`  · ${it.name}　可选份量：${it.sizeCandidates!.map((c) => c.size).join(' / ')}`);
     }
     L.push('  （这类不是「不知道」，而是「等你补一个份量」——本项目不替你猜）');
+    L.push('  指定方式：--variant ' + (sizedItems[0]!.name) + '=' + (sizedItems[0]!.sizeCandidates![0]!.size));
+    L.push('');
+  }
+  if (flavoredItems.length > 0) {
+    L.push(`【需明确口味后才能给营养 · 共 ${flavoredItems.length} 项】`);
+    for (const it of flavoredItems) {
+      L.push(`  · ${it.name}　可选口味：${it.flavorCandidates!.map((c) => c.flavor).join(' / ')}`);
+    }
+    L.push('  （口味不同就是**不同的东西**——热量与配方都可能不同，绝不互相顶替）');
+    L.push('  指定方式：--variant ' + (flavoredItems[0]!.name) + '=' + (flavoredItems[0]!.flavorCandidates![0]!.flavor));
     L.push('');
   }
 
-  const unknown = items.filter((i) => i.confidence === 'D' && (i.sizeCandidates?.length ?? 0) < 2);
+  const unknown = items.filter(
+    (i) => i.confidence === 'D' && (i.sizeCandidates?.length ?? 0) < 2 && (i.flavorCandidates?.length ?? 0) < 2,
+  );
   if (unknown.length > 0) {
     L.push(`【无法给出营养数字的条目 · 共 ${unknown.length} 项 · 列前 8】`);
     for (const it of unknown.slice(0, 8)) {
@@ -434,6 +469,13 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
   L.push(line);
   L.push(`门店    ${src.storeName}${src.storeCode ? `（${src.storeCode}）` : ''}`);
   L.push(`数据    ${src.capturedAt}　·　${src.modeLabel}`);
+  {
+    const f = freshnessOf(src.capturedAt, 'menu');
+    L.push(`时效    ${f.note}`);
+    if (f.status !== 'fresh') {
+      L.push('⛔ 本结果基于**历史样例数据**，不代表当前可售，价格亦未经实时核价。');
+    }
+  }
   L.push(`预算    ¥${(opts.budget ?? 0).toFixed(2)}　·　偏好 ${PR_LABEL[opts.priority]}`);
   const extras: string[] = [];
   if (opts.minProtein !== undefined) extras.push(`最低蛋白 ${opts.minProtein}g`);
@@ -519,9 +561,19 @@ export async function runAnalysis(
   onProgress?: (done: number, total: number) => void,
 ): Promise<string> {
   const matcher = new NutritionMatcher(src.nutritionRows, { aliases: DEFAULT_ALIASES });
+  // 把「菜单名 → 份量/口味」的用户指定，翻译成「菜单 code → 取值」
+  const variantsByCode: Record<string, string> = {};
+  if (Object.keys(opts.variants).length > 0) {
+    for (const it of src.items) {
+      const v = opts.variants[it.name];
+      if (v !== undefined) variantsByCode[it.code] = v;
+    }
+  }
+
   const { items, summary } = await analyzeMenu(src.items, matcher, src.loadDetail, {
     concurrency: 6,
     ...(onProgress ? { onProgress } : {}),
+    ...(Object.keys(variantsByCode).length > 0 ? { variants: variantsByCode } : {}),
   });
 
   // 推荐模式
@@ -585,6 +637,7 @@ export async function runAnalysis(
 export async function runOfflineForTest(args: Partial<CliOptions> = {}): Promise<string> {
   const opts: CliOptions = {
     offline: true,
+    variants: {},
     top: 15,
     sort: 'kcal',
     json: false,

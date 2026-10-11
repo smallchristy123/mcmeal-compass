@@ -16,8 +16,9 @@
 
 import type { MenuItem, MealDetail, NutritionRow } from './schema.ts';
 import type { Cents } from './money.ts';
-import type { Confidence, SizeCandidate } from './matching.ts';
+import type { Confidence, SizeCandidate, FlavorCandidate } from './matching.ts';
 import { NutritionMatcher, assignConfidence, KEY_NUTRIENTS } from './matching.ts';
+import { checkEnergyConsistency } from './validate.ts';
 import {
   decomposeMeal,
   type NutritionTotals,
@@ -51,6 +52,13 @@ export interface AnalyzedItem {
    * 这不是「不知道」，而是「等你补一个输入」。
    */
   sizeCandidates?: SizeCandidate[];
+  /** **口味歧义候选**（与份量同类：等用户补一个输入） */
+  flavorCandidates?: FlavorCandidate[];
+  /**
+   * **数据异常**（如 kJ/kcal 换算不符）：该条记录本身有问题，
+   * 已据此降级可信度，且**不得**进入完整营养推荐。
+   */
+  dataAnomalies?: string[];
   notes: string[];
 }
 
@@ -78,13 +86,34 @@ export function looksLikeCombo(name: string): boolean {
   return COMBO_RE.test(name);
 }
 
-/** 分析一个单品（或无法展开的项）：直接匹配营养表 */
-export function analyzeSingle(item: MenuItem, matcher: NutritionMatcher): AnalyzedItem {
-  const m = matcher.match({ code: item.code, name: item.name });
+/**
+ * 分析一个单品（或无法展开的项）：直接匹配营养表。
+ *
+ * @param variant 用户**显式指定**的份量或口味（计划书 §5.3.3 的 `variant` 维度）。
+ *   指定后匹配器会走 `variant` 优先级；不指定则遇到歧义时**列候选请用户选**。
+ */
+export function analyzeSingle(
+  item: MenuItem,
+  matcher: NutritionMatcher,
+  variant?: string,
+): AnalyzedItem {
+  const m = matcher.match({ code: item.code, name: item.name, ...(variant ? { variant } : {}) });
   const notes = [...m.notes];
 
   if (!m.nutrition) {
     notes.push('未能匹配到官方营养记录——不提供营养数字（D 级）');
+  }
+
+  // kJ/kcal 换算一致性（计划书 §5.3.7）：不一致即视为数据异常，降级且不入完整推荐
+  const dataAnomalies: string[] = [];
+  let confidence = assignConfidence(m.nutrition, false);
+  if (m.nutrition) {
+    const check = checkEnergyConsistency(m.nutrition);
+    if (check.status === 'inconsistent') {
+      dataAnomalies.push(`${m.nutrition.productName}：${check.detail}`);
+      notes.push(`⚠️ 该条营养数据换算不一致，已降级为 C（不再参与完整营养推荐）`);
+      if (confidence === 'A' || confidence === 'B') confidence = 'C';
+    }
   }
 
   return {
@@ -94,12 +123,14 @@ export function analyzeSingle(item: MenuItem, matcher: NutritionMatcher): Analyz
     category: item.category ?? null,
     kind: 'single',
     totals: totalsFromSingle(m.nutrition),
-    confidence: assignConfidence(m.nutrition, false),
+    confidence,
     evidence: m.nutrition
       ? [{ kind: 'official-single', label: `官方单品营养：${m.nutrition.productName}` }]
       : [],
     unmatchedComponents: [],
     ...(m.sizeCandidates ? { sizeCandidates: m.sizeCandidates } : {}),
+    ...(m.flavorCandidates ? { flavorCandidates: m.flavorCandidates } : {}),
+    ...(dataAnomalies.length > 0 ? { dataAnomalies } : {}),
     notes,
   };
 }
@@ -127,6 +158,24 @@ export function analyzeCombo(
     }
   }
 
+  // 逐个组件做 kJ/kcal 换算校验——任一组件的记录不可信，整份合计就不可信
+  const dataAnomalies: string[] = [];
+  const notes = [...d.notes];
+  let confidence = d.confidence;
+  for (const c of d.components) {
+    if (!c.match.nutrition) continue;
+    const check = checkEnergyConsistency(c.match.nutrition);
+    if (check.status === 'inconsistent') {
+      dataAnomalies.push(`${c.match.nutrition.productName}：${check.detail}`);
+    }
+  }
+  if (dataAnomalies.length > 0) {
+    notes.push(
+      `⚠️ 有 ${dataAnomalies.length} 个组件的营养数据换算不一致，整份合计已降级为 C（不参与完整营养推荐）`,
+    );
+    if (confidence === 'A' || confidence === 'B') confidence = 'C';
+  }
+
   return {
     code: item.code,
     name: item.name,
@@ -134,10 +183,11 @@ export function analyzeCombo(
     category: item.category ?? null,
     kind: 'combo',
     totals: d.totals,
-    confidence: d.confidence,
+    confidence,
     evidence,
     unmatchedComponents: d.unmatchedComponents,
-    notes: d.notes,
+    ...(dataAnomalies.length > 0 ? { dataAnomalies } : {}),
+    notes,
   };
 }
 
@@ -153,6 +203,8 @@ export interface MenuAnalysisSummary {
   usable: number;
   /** 其中「完整可信」的条目（A 或 B） */
   solid: number;
+  /** 触发「数据异常」（如 kJ/kcal 换算不符）而被降级的条目数 */
+  dataAnomalies: number;
 }
 
 export interface MenuAnalysis {
@@ -169,6 +221,11 @@ export interface AnalyzeMenuOptions {
   dedupe?: boolean;
   /** 进度回调（便于 CLI 显示） */
   onProgress?: (done: number, total: number) => void;
+  /**
+   * 用户显式指定的份量/口味：`{ 菜单code: '中' | '朱古力' | ... }`（计划书 §5.3.3）。
+   * 未指定的条目若遇歧义，照常列候选请用户选——**不替其猜测**。
+   */
+  variants?: Record<string, string>;
 }
 
 /**
@@ -183,7 +240,8 @@ export async function analyzeMenu(
   loadDetail: ComboDetailLoader,
   options: AnalyzeMenuOptions = {},
 ): Promise<MenuAnalysis> {
-  const { concurrency = 4, limit, dedupe = true, onProgress } = options;
+  const { concurrency = 4, limit, dedupe = true, onProgress, variants } = options;
+  const variantOf = (code: string): string | undefined => variants?.[code];
 
   let list = [...items];
   if (dedupe) {
@@ -211,10 +269,10 @@ export async function analyzeMenu(
             continue;
           }
           // 展开不了 → 降级为单品直配
-          results[idx] = analyzeSingle(item, matcher);
+          results[idx] = analyzeSingle(item, matcher, variantOf(item.code));
           results[idx]!.notes.push('套餐详情不可用，已降级为「直接匹配」——结果可能不完整');
         } catch (e) {
-          results[idx] = analyzeSingle(item, matcher);
+          results[idx] = analyzeSingle(item, matcher, variantOf(item.code));
           results[idx]!.notes.push(
             `套餐详情获取失败（${e instanceof Error ? e.message : String(e)}），已降级为直接匹配`,
           );
@@ -223,7 +281,7 @@ export async function analyzeMenu(
         continue;
       }
 
-      results[idx] = analyzeSingle(item, matcher);
+      results[idx] = analyzeSingle(item, matcher, variantOf(item.code));
       onProgress?.(++done, list.length);
     }
   };
@@ -248,6 +306,7 @@ export async function analyzeMenu(
       byConfidence,
       usable: results.length - byConfidence.D,
       solid: byConfidence.A + byConfidence.B,
+      dataAnomalies: results.filter((i) => (i.dataAnomalies?.length ?? 0) > 0).length,
     },
   };
 }
