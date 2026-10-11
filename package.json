@@ -16,7 +16,9 @@
     "measure": "node scripts/measure-matching.ts",
     "propose": "node scripts/propose-aliases.ts",
     "check:combo": "node scripts/check-combo-decomposition.ts",
-    "capture": "node scripts/capture-fixtures.ts"
+    "capture": "node scripts/capture-fixtures.ts",
+    "verify:fixtures": "node scripts/fixture-manifest.ts",
+    "gate": "npm run verify:fixtures && npm test && npm run typecheck && node -e \"import('./src/cli.ts').then(async (m) => {const out = await m.runOfflineForTest({ top: 3 });if (!out.includes(String.fromCharCode(38376,24215))) throw new Error('离线输出异常');console.log(String.fromCharCode(10) + '✅ gate 全过：夹具一致 · 测试全绿 · 类型干净 · 离线可跑');})\""
   },
   "dependencies": {
     "zod": "^4.6.5"

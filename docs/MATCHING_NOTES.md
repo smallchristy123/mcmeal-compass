@@ -2,7 +2,7 @@
 
 > 采集时间：2026-10-10
 > 采集方式：门店 `3450024`（麦当劳重庆嘉年华餐厅），真实 MCP 调用
-> 原始留档：`docs/probe/`
+> 原始留档：`fixtures/baseline-20261010-3450024/`（不可变快照）
 > 复现命令：`npm run measure`（离线，读留档）｜ `npm run check:combo`（在线，需 Token）
 
 ---
@@ -218,7 +218,7 @@
 
 ```bash
 npm install
-npm run demo           # 离线演示：读 docs/probe 留档，无需 Token
+npm run demo           # 离线演示：读 fixtures/ 快照，无需 Token
 npm run measure        # 匹配质量量尺（离线）
 npm run propose        # 别名候选提案（离线，只提案不落库）
 npm run check:combo    # 套餐展开验证（在线，需 Token）

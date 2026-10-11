@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { FIXTURE_DIR_PARTS } from '../src/fixtures.ts';
 
 import { unwrapMcpData } from '../src/toon.ts';
 import { cents } from '../src/money.ts';
@@ -26,7 +27,7 @@ import {
 import { DEFAULT_ALIASES } from '../src/aliases.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const probe = (f: string) => join(here, '..', 'docs', 'probe', f);
+const probe = (f: string) => join(here, '..', ...FIXTURE_DIR_PARTS, f);
 
 /** 迷你营养行工具 */
 const nut = (productName: string, over: Record<string, unknown> = {}) => ({

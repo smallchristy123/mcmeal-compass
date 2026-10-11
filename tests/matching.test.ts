@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { FIXTURE_DIR_PARTS } from '../src/fixtures.ts';
 
 import { parseToon, extractOriginalResponse, unwrapMcpData } from '../src/toon.ts';
 import { toNutritionRows, toMenuItems, QueryMealsDataSchema, type NutritionRow } from '../src/schema.ts';
@@ -201,20 +202,20 @@ describe('summarize · 统计', () => {
   });
 });
 
-describe('真实数据回归（docs/probe 留档）', () => {
+describe('真实数据回归（fixtures/ 快照留档）', () => {
   /** 载入留档（营养表 + 菜单） */
   const load = async () => {
     const nutEnv = extractOriginalResponse(
       (
         JSON.parse(
-          await readFile(join(here, '..', 'docs', 'probe', 'list-nutrition-foods.raw.json'), 'utf-8'),
+          await readFile(join(here, '..', ...FIXTURE_DIR_PARTS, 'list-nutrition-foods.raw.json'), 'utf-8'),
         ) as { result: { content: { text: string }[] } }
       ).result.content[0]!.text,
     ) as { data: string };
     const { rows } = toNutritionRows(parseToon(nutEnv.data));
 
     const menuData = unwrapMcpData(
-      await readFile(join(here, '..', 'docs', 'probe', 'query-meals.raw.txt'), 'utf-8'),
+      await readFile(join(here, '..', ...FIXTURE_DIR_PARTS, 'query-meals.raw.txt'), 'utf-8'),
     );
     const { items } = toMenuItems(QueryMealsDataSchema.parse(menuData));
     return { rows, items };
@@ -225,7 +226,9 @@ describe('真实数据回归（docs/probe 留档）', () => {
     const m = new NutritionMatcher(rows, { aliases: DEFAULT_ALIASES });
     const { results, stats } = m.matchAll(items);
 
-    // ⚠️ 菜单是动态数据（实测同一门店 128 → 130），故只对**稳定部分**做精确断言。
+    // ✅ 现在可以用**精确数字**断言：输入来自 fixtures/ 的不可变快照（哈希校验见 tests/fixtures.test.ts）。
+    //    此前这些数字是错的用法——那时输入是"活数据"，改断言只是让基线漂移合法化（P0-1 的教训）。
+    //    若将来换快照，须按 fixtures/README.md 显式新建快照，并同步更新下列数字与文档。
     assert.equal(stats.byMethod['exact-name'], 21);
     assert.equal(stats.byMethod.alias, 4);
     assert.equal(stats.byMethod['code-mapping'], 0);

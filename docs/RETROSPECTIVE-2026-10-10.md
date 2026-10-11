@@ -17,7 +17,7 @@
 | 测试 | `toon` / `schema` / `money` / `matching` 四卷 | 718 行 / **80 用例全绿** |
 | 工具 | `measure-matching.ts`（离线量尺）· `check-combo-decomposition.ts`（在线验证） | 166 行 |
 | 文档 | `API_PROBE_NOTES.md`（接口口径）· `MATCHING_NOTES.md`（匹配实测） | 266 行 |
-| 留档 | `docs/probe/` 六份真实调用记录（脱敏） | — |
+| 留档 | `docs/probe/` 六份真实调用记录（脱敏）｜**2026-10-11 已迁为不可变快照 `fixtures/baseline-20261010-3450024/`** | — |
 
 **提交**：`bdc679a` 骨架 → `394d06d` 文档 → `be6be38` 数据层。
 **看板**：45 条，阶段 0 已结（7/7），阶段 1 进行中（4/7）。

@@ -1,0 +1,45 @@
+{
+  "snapshotId": "baseline-20261010-3450024",
+  "schemaVersion": 1,
+  "provenance": {
+    "storeCode": "3450024",
+    "storeName": "麦当劳重庆嘉年华餐厅",
+    "capturedAt": "2026-10-10 20:08:56",
+    "orderType": 1,
+    "beType": 1,
+    "source": "麦当劳中国官方 MCP（mcp.mcd.cn）一次真实调用，脱敏留档；仅含公开菜单与营养数据"
+  },
+  "files": {
+    "calculate-price.raw.txt": {
+      "sha256": "35085f7e6f57a25ddcd8bacf03203cc2ae369ae3decaad89a3f895fda3ee433a",
+      "bytes": 3421
+    },
+    "list-nutrition-foods.raw.json": {
+      "sha256": "d89aacbedd9792cfc923f59e554ce711dd5da5c1602ce153ffb557c990fbb246",
+      "bytes": 8945
+    },
+    "meal-details.bundle.json": {
+      "sha256": "1adfa5f9d976d9cee94e3d3909bef7ce5e2f20b8e00c00edc9c9d5e2ee3f5fab",
+      "bytes": 237519
+    },
+    "query-meal-detail.raw.txt": {
+      "sha256": "7926235a829dd761e8dbf6ef63eca04b2ca5d8c0c7780b4519a6fd512cadfcc5",
+      "bytes": 15530
+    },
+    "query-meals.raw.txt": {
+      "sha256": "6e48008e3c7b77424b1ad8d024f5499ddd3f808f05235833f259108eb1f1ddef",
+      "bytes": 35000
+    },
+    "query-nearby-stores.raw.txt": {
+      "sha256": "4bedd231d546fb548849437983545a849bdd6dd700983b51e113ebefa3a4abbe",
+      "bytes": 3683
+    }
+  },
+  "counts": {
+    "nutritionRows": 160,
+    "menuItems": 130,
+    "menuUniqueItems": 121,
+    "mealDetails": 20
+  },
+  "generatedBy": "scripts/fixture-manifest.ts"
+}

@@ -4,7 +4,7 @@
  * 断言一件事：**套餐不能直接配营养，必须先展开成组件**。
  * 实测（2026-10-10）：
  *   - 套餐直接匹配营养 → 0%（营养表只含单品，套餐名根本不在其中）；
- *   - 经 query-meal-detail 展开后逐件匹配 → 85%（17/20）。
+ *   - 经 query-meal-detail 展开后逐件匹配 → 87.6%（156/178，50 个套餐全量实测）。
  *
  * 用法（需 ~/.workbuddy/mcp.json 内已配好 mcd-mcp 的 Token）：
  *   node scripts/check-combo-decomposition.ts [门店code]
@@ -13,10 +13,12 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { parseToon, extractOriginalResponse, unwrapMcpData } from '../src/toon.ts';
 import { toNutritionRows, toMenuItems, QueryMealsDataSchema, toMealDetail } from '../src/schema.ts';
 import { NutritionMatcher } from '../src/matching.ts';
 import { DEFAULT_ALIASES } from '../src/aliases.ts';
+import { DEFAULT_FIXTURE_DIR } from '../src/fixtures.ts';
 
 const cfg = JSON.parse(await readFile(process.env.USERPROFILE + '/.workbuddy/mcp.json','utf-8'));
 const mcd = cfg.mcpServers['mcd-mcp'];
@@ -31,9 +33,9 @@ async function call(name:string, args:unknown) {
 await fetch(mcd.url, {method:'POST', headers:H,
   body: JSON.stringify({jsonrpc:'2.0',id:++id,method:'initialize',params:{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'p',version:'0'}}})});
 
-const nutEnv = extractOriginalResponse((JSON.parse(await readFile('./docs/probe/list-nutrition-foods.raw.json','utf-8')).result.content[0].text)) as any;
+const nutEnv = extractOriginalResponse((JSON.parse(await readFile(join(DEFAULT_FIXTURE_DIR, 'list-nutrition-foods.raw.json'),'utf-8')).result.content[0].text)) as any;
 const { rows: nutRows } = toNutritionRows(parseToon(nutEnv.data));
-const menuData = unwrapMcpData(await readFile('./docs/probe/query-meals.raw.txt','utf-8'));
+const menuData = unwrapMcpData(await readFile(join(DEFAULT_FIXTURE_DIR, 'query-meals.raw.txt'),'utf-8'));
 const { items } = toMenuItems(QueryMealsDataSchema.parse(menuData));
 const matcher = new NutritionMatcher(nutRows, { aliases: DEFAULT_ALIASES });
 

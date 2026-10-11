@@ -2,7 +2,8 @@
 
 > 采集时间：2026-10-10 17:04–17:12
 > 采集方式：直连 MCP JSON-RPC（`initialize` → `tools/list` → `tools/call`）
-> 原始留档：`docs/probe/*.raw.json`、`docs/probe/*.raw.txt`（脱敏，仅含公开菜单数据）
+> 原始留档：`fixtures/baseline-20261010-3450024/*.raw.json`、`*.raw.txt`（脱敏，仅含公开菜单数据；
+> 快照为**不可变**，契约见 `fixtures/README.md`）
 
 ---
 

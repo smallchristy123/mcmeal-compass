@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { FIXTURE_DIR_PARTS } from '../src/fixtures.ts';
 
 import { McpClient, McpError, redactToken, createClientFromEnv } from '../src/mcp-client.ts';
 import { attemptOrder, assertOrderAllowed, OrderGuardError, type OrderIntent, type OrderAuditEntry } from '../src/order-guard.ts';
@@ -23,7 +24,7 @@ import { toPriceResult } from '../src/schema.ts';
 import { unwrapMcpData } from '../src/toon.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const probe = (f: string) => join(here, '..', 'docs', 'probe', f);
+const probe = (f: string) => join(here, '..', ...FIXTURE_DIR_PARTS, f);
 
 const FAKE_TOKEN = 'TESTONLY-abcdefghijklmnop-0123456789';
 

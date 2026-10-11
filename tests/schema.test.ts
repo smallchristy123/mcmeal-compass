@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { FIXTURE_DIR_PARTS } from '../src/fixtures.ts';
 
 import { parseToon, extractOriginalResponse, unwrapMcpData } from '../src/toon.ts';
 import {
@@ -24,7 +25,7 @@ import {
 } from '../src/schema.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const probe = (f: string) => join(here, '..', 'docs', 'probe', f);
+const probe = (f: string) => join(here, '..', ...FIXTURE_DIR_PARTS, f);
 const readToolText = async (...seg: string[]) => {
   const raw = JSON.parse(await readFile(join(here, '..', ...seg), 'utf-8')) as {
     result: { content: { text: string }[] };
@@ -73,7 +74,7 @@ describe('toNutritionRow · 缺失与零的区分', () => {
 describe('真实营养表留档（160 条）', () => {
   test('解析后 160 条，且 157 条 nutritionDescription 为 null', async () => {
     const env = extractOriginalResponse(
-      await readToolText('docs', 'probe', 'list-nutrition-foods.raw.json'),
+      await readToolText(...FIXTURE_DIR_PARTS, 'list-nutrition-foods.raw.json'),
     ) as { data: string };
     const { rows, skipped } = toNutritionRows(parseToon(env.data));
     assert.equal(rows.length, 160);

@@ -204,13 +204,14 @@ describe('extractOriginalResponse · 从 MCP 返回包取 JSON', () => {
     assert.deepEqual(obj['data'], { nested: { k: 'a}b{' } });
   });
 
-  test('真实探针文件可被解析（docs/probe/list-nutrition-foods.raw.json）', async () => {
+  test('真实探针文件可被解析（fixtures 快照 · list-nutrition-foods.raw.json）', async () => {
     const { readFile } = await import('node:fs/promises');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
+    const { FIXTURE_DIR_PARTS } = await import('../src/fixtures.ts');
     const here = dirname(fileURLToPath(import.meta.url));
     const raw = await readFile(
-      join(here, '..', 'docs', 'probe', 'list-nutrition-foods.raw.json'),
+      join(here, '..', ...FIXTURE_DIR_PARTS, 'list-nutrition-foods.raw.json'),
       'utf-8',
     );
     const envelope = JSON.parse(raw) as {

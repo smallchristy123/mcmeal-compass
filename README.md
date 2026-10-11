@@ -121,7 +121,9 @@ mcmeal-compass/
 │   ├── MATCHING_NOTES.md        # 营养匹配实测（命中率、失败模式、别名取舍）
 │   ├── DECISION_NOTES.md        # 决策内核口径（硬约束 / 评分 / 三方案 / 解释边界）
 │   ├── RETROSPECTIVE-*.md       # 阶段复盘（远观法）
-│   └── probe/                   # 脱敏原始留档 + 离线演示夹具（真实调用记录）
+│   └── REVIEW-DISPOSITION-*.md  # 外部评审的逐条处置（取证 + 裁定）
+├── fixtures/                    # 不可变快照（测试基线的唯一来源，契约见 fixtures/README.md）
+│   └── baseline-20261010-3450024/   # 一次真实调用的冻结：含 manifest.json（SHA-256 + 条数）
 ├── src/                         # 核心实现
 │   ├── toon.ts                  # TOON 解析器 + MCP 返回包拆解
 │   ├── money.ts                 # 金额契约（内部一律整数「分」）
@@ -140,11 +142,12 @@ mcmeal-compass/
 │   ├── fixtures.ts              # 离线夹具加载（无 Token 也能演示）
 │   └── cli.ts                   # 命令行入口（概览 / 推荐两种模式）
 ├── scripts/                     # 可复现的开发工具
-│   ├── measure-matching.ts      # 匹配质量量尺（离线，读留档）
+│   ├── measure-matching.ts      # 匹配质量量尺（离线，读快照）
+│   ├── fixture-manifest.ts      # 快照 manifest 生成/校验（离线，复现门槛）
 │   ├── propose-aliases.ts       # 别名候选提案（离线，只提案不落库）
 │   ├── check-combo-decomposition.ts  # 套餐展开验证（在线，需 Token）
-│   └── capture-fixtures.ts      # 采集离线夹具（在线，需 Token）
-└── tests/                       # 单元测试（node:test，187 个用例）
+│   └── capture-fixtures.ts      # 采集（写 work/captures/，**不碰** fixtures/；在线，需 Token）
+└── tests/                       # 单元测试（node:test，192 个用例）
 ```
 
 ## 开发与测试
@@ -153,15 +156,20 @@ mcmeal-compass/
 
 ```bash
 npm install
-npm test            # 单元测试（解析 / 金额 / 契约 / 匹配 / 展开 / 分析 / 安全 / 决策 / CLI）
+npm run gate        # ⭐ 一条命令走完复现门槛：夹具校验 → 测试 → 类型 → 离线可跑
+npm test            # 单元测试（解析 / 金额 / 契约 / 匹配 / 展开 / 分析 / 安全 / 决策 / CLI / 夹具）
 npm run typecheck   # TypeScript 类型检查
 npm run demo        # 离线演示：门店营养速览（不需要 Token）
 npm run recommend   # 离线演示：三方案推荐（不需要 Token）
-npm run measure     # 匹配质量量尺（离线，读留档）
+npm run measure     # 匹配质量量尺（离线，读 fixtures/ 快照）
+npm run verify:fixtures  # 校验快照与 manifest 的 SHA-256 / 条数是否一致
 npm run propose     # 别名候选提案（离线，只提案不落库，供人工审核）
 npm run check:combo # 套餐展开验证（在线，需先配好 MCP Token）
-npm run capture     # 重新采集离线夹具（在线，需 Token）
+npm run capture     # 采集新数据 → work/captures/（在线，需 Token；**不会**改动测试基线）
 ```
+
+> **测试基线是冻结的**：测试只读 `fixtures/<快照>/`，且逐文件校验 SHA-256；
+> 采集脚本**永不**写入 `fixtures/`。若要换数据，须按 `fixtures/README.md` 显式新建快照并同步更新断言。
 
 **测试与计划书 §11.1 的对应**：`tests/security.test.ts` 按编号覆盖
 T02（401 不泄 Token）/ T03（429 有界退避）/ T11（未确认不下单）/ T12（计价单位）/ T15（无敏感信息）。

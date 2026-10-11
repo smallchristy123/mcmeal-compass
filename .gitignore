@@ -35,3 +35,6 @@ Thumbs.db
 # Skill 本地私有配置（含真实 Token）
 mcp.json
 mcp-config.local.json
+
+# 采集工作区（不进版本控制；夹具快照在 fixtures/）
+work/

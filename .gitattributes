@@ -1,0 +1,13 @@
+# ── 夹具快照：禁止 git 做行尾转换 ──
+# manifest.json 记录的是各文件的 SHA-256。若 git 在检出时把 LF 转成 CRLF（Windows 的
+# core.autocrlf=true 就会），字节即变，哈希校验在**别的机器上必然失败**——
+# 于是"可复现"当场破功。故此处按二进制对待：原样存取，一个字节都不动。
+fixtures/** -text -diff
+
+# ── 以下为常规文本文件：统一以 LF 入库 ──
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.zip binary

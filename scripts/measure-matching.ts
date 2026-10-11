@@ -9,7 +9,7 @@
  * 用法（在仓库根目录）：
  *   node scripts/measure-matching.ts
  *
- * 数据来源：docs/probe/ 下的脱敏实测留档（公开菜单数据，无隐私）。
+ * 数据来源：fixtures/ 下的快照留档（不可变，公开菜单数据，无隐私）。
  */
 
 import { readFile } from 'node:fs/promises';
@@ -20,10 +20,11 @@ import { parseToon, extractOriginalResponse } from '../src/toon.ts';
 import { toNutritionRows, toMenuItems, QueryMealsDataSchema } from '../src/schema.ts';
 import { NutritionMatcher, normalizeName, type MatchResult } from '../src/matching.ts';
 import { DEFAULT_ALIASES } from '../src/aliases.ts';
+import { DEFAULT_FIXTURE_DIR } from '../src/fixtures.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
-const probe = (f: string) => join(root, 'docs', 'probe', f);
+const probe = (f: string) => join(DEFAULT_FIXTURE_DIR, f);
 
 /** 从 MCP 工具留档中取出原始 JSON */
 async function loadEnvelope(file: string): Promise<unknown> {
