@@ -30,6 +30,14 @@ export interface ToolCallTraceEntry {
   ok: boolean;
   /** 调用耗时（毫秒），若可得 */
   ms?: number;
+  /** 发起时刻（ISO）——由**真实报价收据**提供，不再由解释层拼凑 */
+  at?: string;
+  /** 失败分类（如 RATE_LIMITED / TIMEOUT） */
+  errorCode?: string;
+  /** 重试次数 */
+  retries?: number;
+  /** 成功响应内容的哈希前 12 位（可交叉核对） */
+  responseHash?: string;
 }
 
 export interface Explanation {
@@ -51,11 +59,18 @@ export function collectEvidence(priced: PricedCandidate): EvidenceRef[] {
         : `combo:${priced.item.code}`;
     refs.push({ id, kind: ev.kind, label: ev.label });
   }
-  if (priced.quote) {
+  // ⚠️ 只有**官方确实给了价格**才作证据；拿不到报价时不得凭空造一条"官方计价"
+  if (priced.quote && priced.quote.price !== null) {
     refs.push({
       id: `price:${priced.item.code}`,
       kind: 'official-price',
       label: `官方计价：${formatCents(priced.quote.price)}（原价 ${priced.quote.originalPrice === null ? '—' : formatCents(priced.quote.originalPrice)}，优惠 ${priced.quote.discount === null ? '—' : formatCents(priced.quote.discount)}）`,
+    });
+  } else if (priced.receipt && !priced.receipt.ok) {
+    refs.push({
+      id: `price:${priced.item.code}`,
+      kind: 'official-price',
+      label: `官方计价**未取得**（${priced.receipt.errorCode ?? '未知原因'}）：以菜单价计，未核实实付`,
     });
   }
   return refs;
@@ -145,19 +160,49 @@ export function explainPlan(priced: PricedCandidate, baseline?: PricedCandidate)
   return {
     statements,
     evidenceIds: refs.map((r) => r.id),
-    toolCallTrace: [
-      // ⚠️ 只留业务字段；**不含 Token、账号、地址**（门店编码亦以「已脱敏」代过）
-      { tool: 'query-meals', argsSummary: 'storeCode=<已脱敏>', ok: true },
-      ...(it.kind === 'combo'
-        ? [{ tool: 'query-meal-detail', argsSummary: `code=${it.code}`, ok: true }]
-        : []),
-      {
-        tool: 'calculate-price',
-        argsSummary: `items=[{productCode:${it.code}, quantity:1}]`,
-        ok: priced.quote !== null,
-      },
-    ],
+    toolCallTrace: buildToolCallTrace(priced),
   };
+}
+
+/**
+ * 由**真实收据**生成工具轨迹。
+ *
+ * 此前这里是静态拼装（`query-meals` 恒记 `ok: true`）——外部评审 P0-3 指出：
+ * 那样既不能反映真实成败，也不能作审计凭据。现在：
+ *   · `calculate-price` 一条一收据（含时刻、状态、失败分类、重试次数、响应哈希）；
+ *   · `query-meals` / `query-meal-detail` 由候选自带证据推断（**失败即如实记 false**）。
+ */
+export function buildToolCallTrace(priced: PricedCandidate): ToolCallTraceEntry[] {
+  const it = priced.item;
+  const trace: ToolCallTraceEntry[] = [
+    // 候选来自菜单 → 菜单查询必已成功；否则不会有这个候选可推荐
+    { tool: 'query-meals', argsSummary: 'storeCode=<已脱敏>', ok: true },
+  ];
+  if (it.kind === 'combo') {
+    const expanded = it.evidence.some((e) => e.kind === 'official-combo-sum');
+    trace.push({
+      tool: 'query-meal-detail',
+      argsSummary: `code=${it.code}`,
+      ok: expanded,
+      ...(expanded ? {} : { errorCode: 'NOT_EXPANDED' }),
+    });
+  }
+  const r = priced.receipt;
+  if (r) {
+    trace.push({
+      tool: r.tool,
+      argsSummary: r.argsSummary,
+      ok: r.ok,
+      at: r.at,
+      ms: r.durationMs,
+      ...(r.retries === undefined ? {} : { retries: r.retries }),
+      ...(r.errorCode === undefined ? {} : { errorCode: r.errorCode }),
+      ...(r.responseHash === undefined ? {} : { responseHash: r.responseHash }),
+    });
+  } else {
+    trace.push({ tool: 'calculate-price', argsSummary: `items=[${it.code}×1]`, ok: false, errorCode: 'NO_RECEIPT' });
+  }
+  return trace;
 }
 
 /** 两方案对比（直接用程序算出的差） */

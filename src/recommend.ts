@@ -244,6 +244,7 @@ export async function recommendForMenu(
       within: retry.within,
       nearestOver: retry.nearestOver,
       notes: [...pricing.notes, ...retry.notes, '（已对菜单价超预算者做官方计价复核）'],
+      receipts: [...pricing.receipts, ...retry.receipts],
     };
   }
 

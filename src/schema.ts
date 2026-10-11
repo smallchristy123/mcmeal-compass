@@ -355,8 +355,13 @@ export const PriceResultSchema = z.object({
   tablewarePrice: MoneySchema.nullable().optional(),
   originalPrice: MoneySchema.nullable(),
   discount: MoneySchema.nullable(),
-  /** 总现价（分）——最终展示的实付金额 */
-  price: MoneySchema,
+  /**
+   * 总现价（分）——最终展示的实付金额。
+   * **可为 null**：null 表示「官方没有给出该字段/不可解析」（**不是** 0 元）。
+   * 合法 0 元报价（赠品、全额优惠）会如实记为 `0`，与 missing 严格区分——
+   * 若笼统用「>0 才算官方价」，会把 0 元报价误判为"没拿到报价"而回退菜单价。
+   */
+  price: MoneySchema.nullable(),
   productList: z.array(
     z.object({
       productCode: z.string(),
@@ -424,7 +429,7 @@ export function toPriceResult(raw: unknown): PriceResult {
     tablewarePrice: centsFromApi(d.tablewarePrice ?? null),
     originalPrice: centsFromApi(d.originalPrice ?? null),
     discount: centsFromApi(d.discount ?? null),
-    price: centsFromApi(d.price) ?? cents(0),
+    price: centsFromApi(d.price),
     productList: (d.productList ?? []).map((p) => ({
       productCode: p.productCode,
       productName: p.productName,

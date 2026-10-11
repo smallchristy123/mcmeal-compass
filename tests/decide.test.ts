@@ -23,7 +23,7 @@ import {
   type MealRequest,
 } from '../src/constraints.ts';
 import { buildScoreContext, scoreItem, effectiveWeights, paretoFront, DEFAULT_WEIGHTS } from '../src/score.ts';
-import { confirmPrices, type Pricer } from '../src/pricing.ts';
+import { confirmPrices, requoteFinal, type Pricer, type PriceAttempt } from '../src/pricing.ts';
 import { recommendForMenu } from '../src/recommend.ts';
 import { explainPlan, comparePlans } from '../src/explain.ts';
 import { toPriceResult } from '../src/schema.ts';
@@ -91,6 +91,35 @@ const priceResult = (yuan: number, originalYuan = yuan, discountYuan = 0) =>
     productList: [],
     takeWayList: [],
   });
+
+/** 成功报价 + 结构化收据（计价器的新契约：结果与收据一起返回） */
+const okAttempt = (yuan: number, originalYuan = yuan, discountYuan = 0): PriceAttempt => ({
+  quote: priceResult(yuan, originalYuan, discountYuan),
+  receipt: {
+    tool: 'calculate-price',
+    argsSummary: 'items=[TEST×1]',
+    at: new Date().toISOString(),
+    ok: true,
+    attempt: 1,
+    durationMs: 1,
+    responseHash: 'testhash0001',
+  },
+});
+
+/** 失败报价：**如实**标 ok:false，而不是抛错或返回 null 让上层猜 */
+const failAttempt = (code = 'TIMEOUT'): PriceAttempt => ({
+  quote: null,
+  receipt: {
+    tool: 'calculate-price',
+    argsSummary: 'items=[TEST×1]',
+    at: new Date().toISOString(),
+    ok: false,
+    attempt: 1,
+    errorCode: code,
+    errorMessage: `模拟失败（${code}）`,
+    durationMs: 1,
+  },
+});
 
 // ─────────────── T2.1 硬约束 ───────────────
 
@@ -250,7 +279,7 @@ describe('T2.3 · 计价闭环与预算约束', () => {
   const budget = cents(3500);
 
   test('官方计价被采纳，且菜单价与实付不一致时如实标注', async () => {
-    const pricer: Pricer = async () => priceResult(32, 38, 6); // 菜单 35，实付 32
+    const pricer: Pricer = async () => okAttempt(32, 38, 6); // 菜单 35，实付 32
     const r = await confirmPrices([item('A', '堡', 35, { kcal: 500, protein: 25 })], budget, pricer);
     assert.equal(r.within.length, 1);
     const p = r.within[0]!;
@@ -260,7 +289,7 @@ describe('T2.3 · 计价闭环与预算约束', () => {
   });
 
   test('官方计价失败 → 回退菜单价，并**明确标注未核实**', async () => {
-    const pricer: Pricer = async () => null;
+    const pricer: Pricer = async () => failAttempt('TIMEOUT');
     const r = await confirmPrices([item('A', '堡', 30, { kcal: 500, protein: 25 })], budget, pricer);
     const p = r.within[0]!;
     assert.equal(p.priceSource, 'menu');
@@ -268,7 +297,7 @@ describe('T2.3 · 计价闭环与预算约束', () => {
   });
 
   test('超预算被排除在「预算内」之外', async () => {
-    const pricer: Pricer = async () => priceResult(40);
+    const pricer: Pricer = async () => okAttempt(40);
     const r = await confirmPrices([item('A', '贵堡', 40, { kcal: 500, protein: 25 })], budget, pricer);
     assert.equal(r.within.length, 0);
     assert.equal(r.nearestOver?.item.code, 'A');
@@ -277,7 +306,7 @@ describe('T2.3 · 计价闭环与预算约束', () => {
   });
 
   test('全部超预算：给出「最接近」的那个', async () => {
-    const pricer: Pricer = async (it) => priceResult(it.code === 'A' ? 60 : 38);
+    const pricer: Pricer = async (it) => okAttempt(it.code === 'A' ? 60 : 38);
     const r = await confirmPrices(
       [item('A', '很贵堡', 60, { kcal: 500, protein: 25 }), item('B', '小超堡', 38, { kcal: 400, protein: 20 })],
       budget,
@@ -300,7 +329,7 @@ describe('T2.4 · 三方案生成与去重', () => {
       item('MID2', '另一个中间款', 24, { kcal: 480, protein: 24 }),
     ];
 
-  const pricer: Pricer = async (it) => priceResult((it.price ?? 0) / 100);
+  const pricer: Pricer = async (it) => okAttempt((it.price ?? 0) / 100);
 
   const build = async (items: AnalyzedItem[], r = req()) => {
     const { recommendation } = await recommendForMenu(items, r, pricer);
@@ -363,11 +392,13 @@ describe('T2.5 · 证据驱动的解释', () => {
   const mk = (code: string, name: string, yuan: number, protein: number | null, quote = true) => ({
     item: item(code, name, yuan, { kcal: 400, protein }),
     quote: quote ? priceResult(yuan) : null,
+    receipt: quote ? okAttempt(yuan).receipt : failAttempt('TIMEOUT').receipt,
     effectivePrice: cents(yuan * 100) as Cents,
     priceSource: (quote ? 'official' : 'menu') as 'official' | 'menu',
     withinBudget: true,
     overByCents: 0,
     notes: [],
+    verified: quote,
   });
 
   test('对比句里的数字由程序算出，可直接核对', () => {
@@ -401,5 +432,109 @@ describe('T2.5 · 证据驱动的解释', () => {
     const e = explainPlan(mk('A', '甲', 30, 20, false));
     assert.ok(e.statements.some((s) => s.includes('未核实实付')));
     assert.equal(e.toolCallTrace.find((t) => t.tool === 'calculate-price')?.ok, false);
+  });
+});
+
+// ─────────────── T2.3 补充 · 外部评审 P0-3 的处置 ───────────────
+
+describe('T2.3 补充 · 收据 / 0 元报价 / 有界并发 / 止损', () => {
+  const budget = cents(3500);
+
+  test('⭐ 合法的 0 元报价被采纳（0 元 ≠ 没拿到报价）', async () => {
+    const pricer: Pricer = async () => okAttempt(0);
+    const r = await confirmPrices([item('A', '赠品堡', 20, { kcal: 400, protein: 20 })], budget, pricer);
+    const p = r.within[0]!;
+    assert.equal(p.priceSource, 'official');
+    assert.equal(p.effectivePrice, 0);
+    assert.equal(p.verified, true);
+    assert.ok(p.notes.some((n) => n.includes('¥0.00') && n.includes('不是')));
+  });
+
+  test('官方未给价格（quote=null）→ 才回退菜单价，并标未核实', async () => {
+    const pricer: Pricer = async () => failAttempt('BAD_RESPONSE');
+    const r = await confirmPrices([item('A', '堡', 20, { kcal: 400, protein: 20 })], budget, pricer);
+    const p = r.within[0]!;
+    assert.equal(p.priceSource, 'menu');
+    assert.equal(p.verified, false);
+    assert.equal(p.receipt.ok, false);
+    assert.equal(p.receipt.errorCode, 'BAD_RESPONSE');
+  });
+
+  test('每次报价都产出结构化收据（含失败），并汇总进 outcome.receipts', async () => {
+    const pricer: Pricer = async (it) => (it.code === 'B' ? failAttempt('TIMEOUT') : okAttempt(20));
+    const r = await confirmPrices(
+      [item('A', '甲', 20, { kcal: 400, protein: 20 }), item('B', '乙', 22, { kcal: 400, protein: 20 })],
+      budget,
+      pricer,
+    );
+    assert.equal(r.receipts.length, 2);
+    const failed = r.receipts.find((x) => !x.ok)!;
+    assert.equal(failed.errorCode, 'TIMEOUT');
+    assert.ok(failed.at.length > 0, '收据必须带时刻');
+    assert.match(failed.argsSummary, /items=\[/);
+    const oks = r.receipts.find((x) => x.ok)!;
+    assert.ok(oks.responseHash, '成功收据应含响应哈希');
+  });
+
+  test('请求预算封顶：超出预算的候选标「未发起」并如实降级', async () => {
+    const seen: string[] = [];
+    const pricer: Pricer = async (it) => {
+      seen.push(it.code);
+      return okAttempt(10);
+    };
+    const many = Array.from({ length: 6 }, (_, i) => item(`C${i}`, `候选${i}`, 10, { kcal: 300, protein: 10 }));
+    const r = await confirmPrices(many, budget, pricer, { maxRequests: 2, concurrency: 1 });
+    assert.equal(seen.length, 2, '只应发起 2 次请求');
+    const skipped = r.receipts.filter((x) => x.errorCode === 'BUDGET_EXCEEDED');
+    assert.equal(skipped.length, 4);
+    assert.ok(skipped.every((x) => x.attempt === 0), '未发起的收据 attempt 应为 0');
+    assert.ok(r.notes.some((n) => n.includes('请求预算上限')));
+  });
+
+  test('遇 429 → 停止后续计价（止损），并记明原因', async () => {
+    let calls = 0;
+    const pricer: Pricer = async () => {
+      calls++;
+      return failAttempt('RATE_LIMITED');
+    };
+    const many = Array.from({ length: 5 }, (_, i) => item(`D${i}`, `候选${i}`, 10, { kcal: 300, protein: 10 }));
+    const r = await confirmPrices(many, budget, pricer, { concurrency: 1 });
+    assert.ok(calls < 5, `应在限流后停止，实际调用了 ${calls} 次`);
+    assert.ok(r.notes.some((n) => n.includes('限流')));
+    assert.ok(r.notes.some((n) => n.includes('未核实实付')));
+  });
+
+  test('并发上限生效（不会一次打满）', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const pricer: Pricer = async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return okAttempt(10);
+    };
+    const many = Array.from({ length: 9 }, (_, i) => item(`E${i}`, `候选${i}`, 10, { kcal: 300, protein: 10 }));
+    await confirmPrices(many, budget, pricer, { concurrency: 3 });
+    assert.ok(peak <= 3, `并发峰值应 ≤3，实际 ${peak}`);
+  });
+
+  test('最终复核：与初次报价不一致时如实指出', async () => {
+    const p = {
+      item: item('A', '堡', 20, { kcal: 400, protein: 20 }),
+      quote: null,
+      receipt: failAttempt().receipt,
+      effectivePrice: cents(2000) as Cents,
+      priceSource: 'menu' as const,
+      withinBudget: true,
+      overByCents: 0,
+      notes: [],
+      verified: false,
+    };
+    const pricer: Pricer = async () => okAttempt(22);
+    const r = await requoteFinal(p, pricer);
+    assert.equal(r.price, 2200);
+    assert.equal(r.consistent, false);
+    assert.ok(r.note.includes('以复核价为准'));
   });
 });

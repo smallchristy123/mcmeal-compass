@@ -18,7 +18,15 @@ import { fileURLToPath } from 'node:url';
 import { FIXTURE_DIR_PARTS } from '../src/fixtures.ts';
 
 import { McpClient, McpError, redactToken, createClientFromEnv } from '../src/mcp-client.ts';
-import { attemptOrder, assertOrderAllowed, OrderGuardError, type OrderIntent, type OrderAuditEntry } from '../src/order-guard.ts';
+import {
+  attemptOrder,
+  assertOrderAllowed,
+  assertRealOrderingEnabled,
+  REAL_ORDERING_ENABLED,
+  OrderGuardError,
+  type OrderIntent,
+  type OrderAuditEntry,
+} from '../src/order-guard.ts';
 import { cents } from '../src/money.ts';
 import { toPriceResult } from '../src/schema.ts';
 import { unwrapMcpData } from '../src/toon.ts';
@@ -43,10 +51,20 @@ function fakeFetch(
 const jsonRes = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
-const toolOk = (data: unknown) =>
+/** 从请求体里取 id —— 真服务端会**回显请求 id**，假服务端也应当如此，
+ *  否则「一次 429 后重试成功」这类用例会因为 id 对不上而误判。 */
+const idOf = (init?: RequestInit): number => {
+  try {
+    return (JSON.parse(String(init?.body ?? '{}')) as { id?: number }).id ?? 1;
+  } catch {
+    return 1;
+  }
+};
+
+const toolOk = (data: unknown, init?: RequestInit) =>
   jsonRes({
     jsonrpc: '2.0',
-    id: 1,
+    id: idOf(init),
     result: { content: [{ text: `## Original Response\n\n${JSON.stringify({ success: true, code: 200, data })}` }] },
   });
 
@@ -127,7 +145,7 @@ describe('T03 · 429 / 超时 有界退避', () => {
   });
 
   test('429 后成功：返回结果，不抛错', async () => {
-    const f = fakeFetch((n) => (n === 1 ? new Response('no', { status: 429 }) : toolOk({ ok: 1 })));
+    const f = fakeFetch((n, init) => (n === 1 ? new Response('no', { status: 429 }) : toolOk({ ok: 1 }, init)));
     const c = new McpClient({
       url: 'https://x', token: FAKE_TOKEN, fetchImpl: f.impl, sleepImpl: async () => {},
     });
@@ -166,7 +184,7 @@ describe('T03 · 429 / 超时 有界退避', () => {
     let seen = '';
     const f = fakeFetch((_n, init) => {
       seen = String((init.headers as Record<string, string>)['Authorization'] ?? '');
-      return toolOk({});
+      return toolOk({}, init);
     });
     const c = new McpClient({ url: 'https://x', token: FAKE_TOKEN, fetchImpl: f.impl });
     await c.callTool('any');
@@ -351,5 +369,96 @@ describe('T15 · 仓库无敏感信息', () => {
     const t = readFileSync(join(repoRoot, 'mcp-config.example.json'), 'utf-8');
     assert.ok(/YOUR_MCP_TOKEN|\$\{/.test(t), '示例配置应使用占位符');
     assert.ok(!/Bearer\s+[A-Za-z0-9]{20,}/.test(t), '示例配置里不能有真 Token');
+  });
+});
+
+// ───────────────── T11 补充 · 外部评审 P0-4 指出的两个边界 ─────────────────
+
+describe('T11 补充 · 闸门边界（未来时间戳 / 执行失败留痕）', () => {
+  const base = (over: Partial<OrderIntent> = {}): OrderIntent => ({
+    storeCode: '3450024',
+    orderType: 1,
+    beType: 1,
+    items: [{ productCode: '9900005456', quantity: 1 }],
+    quotedTotal: cents(3800),
+    quotedAt: new Date().toISOString(),
+    ...over,
+  });
+  const confirmed = { confirmed: true, acknowledgedTotal: cents(3800) };
+
+  test('未来时间戳的报价 → FUTURE_QUOTE（不被当成"永远新鲜"）', () => {
+    const future = new Date(Date.now() + 10 * 60_000).toISOString();
+    assert.throws(
+      () => assertOrderAllowed(base({ quotedAt: future }), confirmed),
+      (e: unknown) => (e as OrderGuardError).code === 'FUTURE_QUOTE',
+    );
+  });
+
+  test('轻微时钟偏差（默认 60 秒内）不算未来时间，仍可放行', () => {
+    const slight = new Date(Date.now() + 5_000).toISOString();
+    assert.doesNotThrow(() => assertOrderAllowed(base({ quotedAt: slight }), confirmed));
+  });
+
+  test('执行抛错 → 审计里能区分「放行但提交失败」与「从未尝试」', async () => {
+    const log: OrderAuditEntry[] = [];
+    const r = await attemptOrder(base(), confirmed, async () => {
+      throw new Error('官方接口 500');
+    }, log);
+    assert.equal(r.allowed, false);
+    assert.equal(r.code, 'EXECUTE_FAILED');
+    assert.equal(r.attempted, true, '应标为"尝试过"');
+    assert.equal(log.length, 1);
+    assert.equal(log[0]!.stage, 'execute');
+    assert.equal(log[0]!.allowed, false);
+    assert.equal(log[0]!.errorName, 'Error');
+
+    const log2: OrderAuditEntry[] = [];
+    const r2 = await attemptOrder(base(), { confirmed: false }, async () => 'never', log2);
+    assert.equal(r2.attempted, false, '未过闸 → 从未尝试');
+    assert.equal(log2[0]!.stage, 'guard');
+  });
+
+  test('真实下单在本版本被显式关闭：调用即抛 ORDERING_DISABLED', () => {
+    assert.equal(REAL_ORDERING_ENABLED, false);
+    assert.throws(
+      () => assertRealOrderingEnabled(),
+      (e: unknown) => (e as OrderGuardError).code === 'ORDERING_DISABLED',
+    );
+  });
+
+  test('客户端 createOrder 亦被同一守卫拦下（不发出任何请求）', async () => {
+    let called = 0;
+    const f = fakeFetch(() => {
+      called++;
+      return new Response('{}', { status: 200 });
+    });
+    const c = new McpClient({ url: 'https://x', token: FAKE_TOKEN, fetchImpl: f.impl });
+    await assert.rejects(
+      () => c.createOrder({ storeCode: 'x' }),
+      (e: unknown) => (e as OrderGuardError).code === 'ORDERING_DISABLED',
+    );
+    assert.equal(called, 0, '关闭状态下不应发出任何网络请求');
+  });
+});
+
+// ───────────────── 门店解析 fail-closed（评审 P2） ─────────────────
+
+describe('门店解析 · fail-closed（不把 undefined 悄悄变成空串）', () => {
+  test('storeCode 缺失 → 抛 BAD_RESPONSE，而不是返回空串门店', async () => {
+    const f = fakeFetch((_n, init) => toolOk({ data: [{ storeName: '某某餐厅' }] }, init));
+    const c = new McpClient({ url: 'https://x', token: FAKE_TOKEN, fetchImpl: f.impl });
+    await assert.rejects(
+      () => c.searchStores({ city: '重庆市', keyword: '观音桥' }),
+      (e: unknown) => (e as McpError).code === 'BAD_RESPONSE' && (e as Error).message.includes('storeCode'),
+    );
+  });
+
+  test('字段齐全 → 正常返回', async () => {
+    const f = fakeFetch((_n, init) =>
+      toolOk({ data: [{ storeCode: '3450024', storeName: '麦当劳重庆嘉年华餐厅' }] }, init),
+    );
+    const c = new McpClient({ url: 'https://x', token: FAKE_TOKEN, fetchImpl: f.impl });
+    const list = await c.searchStores({ city: '重庆市', keyword: '观音桥' });
+    assert.deepEqual(list.map((s) => s.storeCode), ['3450024']);
   });
 });

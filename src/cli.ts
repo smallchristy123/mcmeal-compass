@@ -21,8 +21,7 @@ import { parseToon } from './toon.ts';
 import { toNutritionRows, type MenuItem, type MealDetail, type NutritionRow } from './schema.ts';
 import type { Priority } from './constraints.ts';
 import { recommendForMenu, type Recommendation } from './recommend.ts';
-import type { Pricer } from './pricing.ts';
-import type { PriceResult } from './schema.ts';
+import { buildArgsSummary, hashResponse, type PriceAttempt, type Pricer } from './pricing.ts';
 import { pathToFileURL } from 'node:url';
 
 // ─────────────────── 参数解析 ───────────────────
@@ -107,6 +106,11 @@ const USAGE = `
   --avoid-sugary     避开含糖饮料
   --declared-allergy 已声明过敏（触发安全闸：不再声称「安全」）
   --json             输出 JSON
+
+⛔ 本版本**不能下单**：create-order 未接入，下单能力已显式关闭（ORDERING_DISABLED）。
+   仓库中的下单闸门（order-guard.ts）保证「未确认绝不执行」，但**不代表现在可以下单**。
+
+协议：默认 legacy（2025-06-18，握手时代）；可用 MCD_PROTOCOL_VERSION 指定（如 2026-07-28 走无握手形态）。
 `;
 
 // ─────────────────── 取数 ───────────────────
@@ -133,9 +137,21 @@ async function loadFromFixtures(): Promise<Sourced> {
     items: b.menuItems,
     nutritionRows: b.nutritionRows,
     loadDetail: fixtureDetailLoader(b),
-    // 离线夹具里只有一份计价留档，不足以覆盖所有候选；
-    // 故返回 null，让计价环节**如实降级为「菜单价、未核实实付」**（而不是假装已核实）
-    price: async () => null,
+    // 离线夹具里只有一份计价留档，不足以覆盖所有候选；故**不发起**官方计价，
+    // 并如实产出一条"未发起"的收据（而不是假装已核实、更不是静默返回 null）
+    price: async (item) => ({
+      quote: null,
+      receipt: {
+        tool: 'calculate-price',
+        argsSummary: buildArgsSummary([{ productCode: item.code, quantity: 1 }]),
+        at: new Date().toISOString(),
+        ok: false,
+        attempt: 0,
+        errorCode: 'OFFLINE',
+        errorMessage: '离线模式：夹具不含该候选的计价留档，未发起计价',
+        durationMs: 0,
+      },
+    }),
     modeLabel: '离线夹具（无需 Token）',
   };
 }
@@ -146,7 +162,12 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
   if (!token) {
     throw new McpError('NO_TOKEN', '未设置环境变量 MCD_MCP_TOKEN');
   }
-  const client = new McpClient({ url: process.env['MCD_MCP_URL'] ?? 'https://mcp.mcd.cn', token });
+  const client = new McpClient({
+    url: process.env['MCD_MCP_URL'] ?? 'https://mcp.mcd.cn',
+    token,
+    // 协议口径可由环境变量指定；默认 legacy（对 mcp.mcd.cn 实测可用）
+    ...(process.env['MCD_PROTOCOL_VERSION'] ? { protocolVersion: process.env['MCD_PROTOCOL_VERSION'] } : {}),
+  });
   const info = await client.initialize();
 
   let storeCode = opts.store;
@@ -186,21 +207,54 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
     }
   };
 
-  const priceCache = new Map<string, PriceResult | null>();
+  // 缓存键必须含**门店 / 取餐方式 / 商品 / 数量 / 时间窗**——
+  // 只按商品码缓存是错的：同一商品在不同门店、不同时间窗的报价可能不同（P0-3）
+  const PRICE_WINDOW_MS = 5 * 60_000;
+  const priceCache = new Map<string, PriceAttempt>();
+  const cacheKeyOf = (code: string, qty: number) =>
+    `${storeCode}|${1}|${1}|${code}|${qty}|${Math.floor(Date.now() / PRICE_WINDOW_MS)}`;
+
   const price: Pricer = async (item) => {
-    if (priceCache.has(item.code)) return priceCache.get(item.code) ?? null;
+    const list = [{ productCode: item.code, quantity: 1 }];
+    const key = cacheKeyOf(item.code, 1);
+    const hit = priceCache.get(key);
+    if (hit) return hit;
+
+    const started = Date.now();
+    const base = {
+      tool: 'calculate-price' as const,
+      argsSummary: buildArgsSummary(list),
+      at: new Date().toISOString(),
+    };
     try {
       const p = await client.calculatePrice({
         storeCode: storeCode!,
         orderType: 1,
         beType: 1,
-        items: [{ productCode: item.code, quantity: 1 }],
+        items: list,
       });
-      priceCache.set(item.code, p);
-      return p;
-    } catch {
-      priceCache.set(item.code, null);
-      return null;
+      const attempt: PriceAttempt = {
+        quote: p,
+        receipt: { ...base, ok: true, attempt: 1, responseHash: hashResponse(p), durationMs: Date.now() - started },
+      };
+      priceCache.set(key, attempt);
+      return attempt;
+    } catch (e) {
+      const err = e as { code?: string; message?: string; status?: number };
+      const attempt: PriceAttempt = {
+        quote: null,
+        receipt: {
+          ...base,
+          ok: false,
+          attempt: 1,
+          ...(err.code === undefined ? {} : { errorCode: err.code }),
+          errorMessage: err.message ?? String(e),
+          durationMs: Date.now() - started,
+        },
+      };
+      // 失败也**如实缓存**（含失败原因），避免同一时间窗内反复打同一个必败的请求
+      priceCache.set(key, attempt);
+      return attempt;
     }
   };
 
@@ -212,7 +266,7 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
     nutritionRows,
     loadDetail,
     price,
-    modeLabel: `实时调用（mcd-mcp ${info.version ?? ''}）`.trim(),
+    modeLabel: `实时调用（mcd-mcp ${info.version ?? ''} · 协议 ${info.protocolVersion}/${info.era}）`.trim(),
   };
 }
 
@@ -448,8 +502,9 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
 
   L.push('说明：');
   L.push('  · 所有数值均由程序计算；缺失一律标 — 或 ≥，绝不填 0 冒充。');
-  L.push('  · 权重为产品内部启发式，**不是医学标准**，也不构成营养建议。');
+  L.push('  · 权重为**排序偏好（内部启发式）**，不是医学标准，也不构成营养建议。');
   L.push('  · 官方计价未取得时以菜单价计，并明确标注「未核实实付」。');
+  L.push('  · ⛔ 本版本**不能下单**：create-order 未接入，下单已显式关闭（ORDERING_DISABLED）。');
   L.push(line);
   return L.join('\n');
 }
