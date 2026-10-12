@@ -134,6 +134,29 @@ export const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/**
+ * 兼容层：`callTool` 返回的**已经是业务 data**。
+ *
+ * 为什么需要它：v3 的 R8 分层验证把 `callTool` 的返回契约从「外层信封」改成「已拆包的 data」，
+ * 但有**两个调用点漏同步**——门店搜索仍写 `data?.data`（门店数组被再拆一次 ⇒ 恒为空列表），
+ * 营养表仍写 `as { data?: string }`（⇒ 报「缺 data 字段」）。**在线模式因此整条不可用**，
+ * 而离线夹具永远跑不到这条路径（不经过 McpClient）——这正是「真实端点证据」才能暴露的缺陷。
+ *
+ * 判据刻意保守：**只有形如官方信封**（键全落在 success/code/message/datetime/traceId/data 内）
+ * 才取内层 `data`，避免把「业务对象自带的 data 字段」误拆。
+ */
+export function unwrapToolData<T = unknown>(value: unknown): T {
+  if (typeof value === 'string' || Array.isArray(value)) return value as T;
+  if (value !== null && typeof value === 'object') {
+    const env = value as Record<string, unknown>;
+    const ENVELOPE_KEYS = new Set(['success', 'code', 'message', 'datetime', 'traceId', 'data']);
+    if ('data' in env && Object.keys(env).every((k) => ENVELOPE_KEYS.has(k))) {
+      return env['data'] as T;
+    }
+  }
+  return value as T;
+}
+
 export class McpClient {
   private readonly url: string;
   private readonly token: string;
@@ -521,13 +544,17 @@ export class McpClient {
   async searchStores(params: { city: string; keyword: string; beType?: 1 | 5; searchType?: 1 | 2 }): Promise<
     { storeCode: string; storeName: string; address?: string; beCode?: string }[]
   > {
-    const data = (await this.callTool('query-nearby-stores', {
-      beType: params.beType ?? 1,
-      searchType: params.searchType ?? 2,
-      city: params.city,
-      keyword: params.keyword,
-    })) as { data?: unknown } | undefined;
-    const list = Array.isArray(data?.data) ? (data!.data as Record<string, unknown>[]) : [];
+    // ⚠️ `callTool` 已拆包：返回值**就是门店数组**。
+    // 旧代码写 `data?.data`，属双重拆包 ⇒ 门店列表恒为空（真实端点实测「未找到门店」的根因）。
+    const data = unwrapToolData(
+      await this.callTool('query-nearby-stores', {
+        beType: params.beType ?? 1,
+        searchType: params.searchType ?? 2,
+        city: params.city,
+        keyword: params.keyword,
+      }),
+    );
+    const list = Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
     // **fail-closed**：门店码缺失时**宁可报错**，绝不把 undefined 悄悄变成空串——
     // 空串会一路传下去变成「查了一个不存在的门店」，比直接失败更难排查。
     return list.map((s, i) => {

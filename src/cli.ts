@@ -15,7 +15,8 @@ import { NutritionMatcher, type Confidence } from './matching.ts';
 import { DEFAULT_ALIASES } from './aliases.ts';
 import { analyzeMenu, type AnalyzedItem, type DataSourceReceipt } from './analyze.ts';
 import { loadFixtures, fixtureDetailLoader } from './fixtures.ts';
-import { McpClient, McpError } from './mcp-client.ts';
+import { McpClient, McpError, unwrapToolData } from './mcp-client.ts';
+import { createDetailLoader } from './detail-loader.ts';
 import { formatCents } from './money.ts';
 import { parseToon } from './toon.ts';
 import { toNutritionRows, type MenuItem, type MealDetail, type NutritionRow } from './schema.ts';
@@ -272,9 +273,11 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
   });
 
   // 营养表（在线模式下单独取一次）
-  const nutData = (await client.callTool('list-nutrition-foods', {})) as { data?: string };
-  if (typeof nutData?.data !== 'string') {
-    throw new McpError('BAD_RESPONSE', '营养表返回结构异常（缺 data 字段）');
+  // ⚠️ `callTool` 已拆包：返回值**就是 TOON 字符串**；旧代码再取一层 `.data` 会报「缺 data 字段」
+  // （真实端点实测踩到——离线夹具不经过此路径，故长期未暴露）
+  const nutToon = unwrapToolData(await client.callTool('list-nutrition-foods', {}));
+  if (typeof nutToon !== 'string') {
+    throw new McpError('BAD_RESPONSE', '营养表返回结构异常（既非 TOON 字符串，也无 data 字段）');
   }
   sourceReceipts.push({
     tool: 'list-nutrition-foods',
@@ -285,20 +288,10 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
     stage: 'nutrition',
     requestId: 'live#list-nutrition-foods',
   });
-  const nutritionRows = toNutritionRows(parseToon(nutData.data)).rows;
+  const nutritionRows = toNutritionRows(parseToon(nutToon)).rows;
 
-  const detailCache = new Map<string, MealDetail | null>();
-  const loadDetail = async (code: string) => {
-    if (detailCache.has(code)) return detailCache.get(code) ?? null;
-    try {
-      const d = await client.getMealDetail({ storeCode: storeCode!, orderType: 1, beType: 1, code });
-      detailCache.set(code, d);
-      return d;
-    } catch {
-      detailCache.set(code, null);
-      return null;
-    }
-  };
+  // 套餐详情加载器：失败**抛出**原始错误（不吞错），并缓存「成功/失败」两态
+  const loadDetail = createDetailLoader(client, storeCode!);
 
   // 缓存键必须含**门店 / 取餐方式 / 商品与数量 / 组成指纹 / 时间窗**——
   // 只按商品码缓存是错的：同一商品在不同门店、不同时间窗、不同组成的报价可能不同（P0-3 / R4）

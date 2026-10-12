@@ -143,18 +143,34 @@ export function looksLikeCombo(name: string): boolean {
 }
 
 /**
- * **主件**识别（v3.2，人工审核 2026-10-12 发现）：
+ * **主件**识别（v3.2；源自 35 条分层样本复核——该样本为 AI 辅助预填，待主君确认）：
  * 汉堡/主食类若未收录，整份套餐的「已知部分之和」会**严重偏低**
  * （实例：龙焰芝士棒鸡腿堡三件套 436 kcal 只等于「中薯条 289 + 可乐 147」，汉堡本体缺失）。
  */
-const STAPLE_RE = /(汉堡|主食|主餐|主件|肉夹|堡|卷|饭|面|披萨)/;
+const STAPLE_RE = /(汉堡|主食|主餐|主件|肉夹|堡|卷|饭|面|披萨|巨无霸|麦香鸡|麦香鱼|鸡排)/;
 /** 非食品周边（玩具/贴纸/搪胶等）——不计入「主件缺失」判定，避免误伤 */
 const NON_FOOD_RE = /(玩具|贴纸|帽|捶|挠|公仔|徽章|盲盒|手办|水手)/;
+/**
+ * 轮次名里含「并列的小食/配菜/饮品」时，**轮次名不足以判定主件**
+ * （实例：「选择主食/小食」这个轮次里可能选到薯条、麦乐鸡——它们不是主件）。
+ */
+const MIXED_ROUND_RE = /(小食|配菜|副食|饮品|饮料|甜品|冰品|沙拉|汤)/;
 
-/** 某个未匹配组件是否属于「主件」（决定是否还敢给营养数字） */
+/**
+ * 某个未匹配组件是否属于「主件」（决定是否还敢给营养数字）。
+ *
+ * v3.3（复评 P1/P2）：**优先按 choiceName 判定**；仅当选项名不是主件、且轮次语义明确
+ * （**不含**「小食/配菜」这类并列项）时，才用轮次名兜底。
+ * 修前写法 `STAPLE_RE.test(roundName) || STAPLE_RE.test(choiceName)` 会把
+ * 「选择主食/小食 + 中薯条」误判为主件缺失，导致整单降 D、营养数字被清空。
+ */
 export function isStapleComponent(roundName: string, choiceName: string): boolean {
   if (NON_FOOD_RE.test(choiceName) || NON_FOOD_RE.test(roundName)) return false;
-  return STAPLE_RE.test(roundName) || STAPLE_RE.test(choiceName);
+  // ① 选项名明确是主件 → 是（优先看选项本身）
+  if (STAPLE_RE.test(choiceName)) return true;
+  // ② 选项名不是主件时，只有轮次语义明确才兜底；含并列小食的轮次名不作主件信号
+  if (MIXED_ROUND_RE.test(roundName)) return false;
+  return STAPLE_RE.test(roundName);
 }
 
 /** 把合计整体「抹平为零缺失」——用于「不给数字」的情形（**不是**填 0） */
@@ -182,6 +198,15 @@ export interface DataSourceContext {
  * （`options.sourceReceipts`），或由 `analyzeMenu` 在**调用套餐详情处**按实际结果产生。
  * **不得**用「live 上下文」去推断一次具体调用成功。
  */
+/**
+ * 由来源上下文生成**兜底**的工具轨迹。
+ *
+ * ⚠️ R13 / v3.3（复评 P2）：这只是**没有真实收据时**的退路，而且**永远不得合成 `ok:true`**——
+ * 那等于报告一次「没有发生过的成功调用」。取数方应在真实调用点产生收据
+ * （`options.sourceReceipts`，或 `analyzeMenu` 在详情调用处产生的 detailReceipt）；
+ * 若渠道是 `live` 却没有真实收据，如实记 `LIVE_RECEIPT_MISSING`（**不是**成功）；
+ * 离线/历史来源记 `OFFLINE_FIXTURE` / `HISTORY_SNAPSHOT`，同样不是成功。
+ */
 function synthReceipts(
   tools: readonly ('query-meals' | 'query-meal-detail' | 'list-nutrition-foods')[],
   source: DataSourceContext | undefined,
@@ -192,16 +217,16 @@ function synthReceipts(
   return tools.map((tool) => ({
     tool,
     channel: source.channel,
-    ok: live,
+    // ← 合成即「无真实收据」：一律 ok=false，绝不因「上下文是 live」就报成功（v3.3）
+    ok: false,
     at: source.at,
     argsSummary,
-    ...(live
-      ? {}
-      : {
-          errorCode:
-            source.channel === 'offline' ? 'OFFLINE_FIXTURE' : 'HISTORY_SNAPSHOT',
-          snapshotId: source.snapshotId,
-        }),
+    errorCode: live
+      ? 'LIVE_RECEIPT_MISSING'
+      : source.channel === 'offline'
+        ? 'OFFLINE_FIXTURE'
+        : 'HISTORY_SNAPSHOT',
+    ...(live || source.snapshotId === undefined ? {} : { snapshotId: source.snapshotId }),
   }));
 }
 
@@ -316,7 +341,7 @@ export function analyzeCombo(
     if (confidence === 'A' || confidence === 'B') confidence = 'C';
   }
 
-  // ── 主件未收录 ⇒ **不给营养数字**（v3.2，人工审核 2026-10-12 发现的误配）──
+  // ── 主件未收录 ⇒ **不给营养数字**（v3.2；源自 35 条分层样本复核：AI 辅助预填，待主君确认）──
   // 为什么必须这么严：漏掉主件时「已知部分之和」会低到误导（436 kcal 里没有汉堡），
   // `≥` 标记不足以抵消；按铁律「信息不足时坦率少给」，此时**不提供数字**并降为 D。
   const stapleMissing = d.components.filter(
