@@ -109,7 +109,7 @@ describe('analyzeSingle', () => {
   test('命中：给出证据与营养', () => {
     const a = analyzeSingle(item('1', '巨无霸'), matcher);
     assert.equal(a.kind, 'single');
-    assert.equal(a.confidence, 'B'); // 无组成信息故 B
+    assert.equal(a.confidence, 'A'); // v3.6 甲案：官方单品精确直配、营养完整且无推断 ⇒ **A**（此前该档对单品不可达）
     assert.equal(a.totals.energyKcal.value, 240);
     assert.equal(a.evidence[0]!.kind, 'official-single');
     assert.ok(a.evidence[0]!.label.includes('巨无霸'));
@@ -165,7 +165,8 @@ describe('analyzeMenu · 统管两条路', () => {
     assert.equal(r.items.length, 3);
     assert.equal(r.summary.singles, 2);
     assert.equal(r.summary.combos, 1);
-    assert.equal(r.summary.byConfidence.B, 2); // 巨无霸 + 甲套餐
+    assert.equal(r.summary.byConfidence.A, 1); // 巨无霸：官方单品精确直配 ⇒ v3.6 起为 A
+    assert.equal(r.summary.byConfidence.B, 1); // 甲套餐：组合求和 ⇒ B
     assert.equal(r.summary.byConfidence.D, 1); // 不存在的堡
     assert.equal(r.summary.usable, 2);
   });

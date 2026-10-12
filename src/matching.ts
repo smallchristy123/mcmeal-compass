@@ -213,18 +213,38 @@ export function hasAnyKeyNutrient(n: NutritionRow | null,
 }
 
 /**
- * 给出可信度分层。
- * @param nutrition 命中的营养数据（null = 未命中）
- * @param hasComposition 是否能从 query-meal-detail 取到该餐品的组成
+ * 可信度分层判据（**v3.6 · 甲案：让 A 级可达**）。
+ *
+ * 语义（与 README 的「A 官方单品 / B 可追溯组合」对齐）：
+ *   · **A** —— 官方单品**精确直配**、营养完整、**不含推断**；（最高档）
+ *   · **B** —— 组合求和（可追溯组合），或含推断/别名/份量匹配；
+ *   · **C** —— 部分可知（有关键字段缺失，只展示已知部分）；
+ *   · **D** —— 未命中/无可信信息（**不给数字**）。
+ *
+ * 修前写法为 `hasComposition ? 'A' : 'B'`——A 只在「该餐品有官方组成」时才给，
+ * 而单品调用恒传 `false`，故 **A 对单品永远不可达**（文档却写着「A 官方单品」）。
+ * 甲案的裁定：让 A 表示「最可靠的官方单品直配」，**最高档必须真能到达**。
+ *
+ * @param arg 兼容旧式布尔（`hasComposition`）或新式对象
  */
 export function assignConfidence(
   nutrition: NutritionRow | null,
-  hasComposition: boolean,
+  arg: boolean | { hasComposition?: boolean; method?: MatchMethod; risky?: boolean } = false,
 ): Confidence {
+  const opts = typeof arg === 'boolean' ? { hasComposition: arg } : arg;
+  const { hasComposition = false, method, risky = false } = opts;
+
   if (!nutrition) return 'D';
   if (!hasAnyKeyNutrient(nutrition)) return 'D';
   if (!isNutritionComplete(nutrition)) return 'C'; // 部分缺失：只展示已知部分
-  return hasComposition ? 'A' : 'B';
+
+  // ① 有官方组成信息（组件级使用）⇒ 最高档，保留旧行为
+  if (hasComposition) return 'A';
+  // ② 官方单品**精确直配且无推断** ⇒ A（v3.6 新增：此前该档对单品不可达）
+  //    「精确」＝按官方 code 映射（`code-mapping`）或按名称精确命中（`exact-name`）
+  if ((method === 'code-mapping' || method === 'exact-name') && !risky) return 'A';
+  // ③ 其余（别名/变体/份量匹配、或含推断）⇒ 可追溯但需标注
+  return 'B';
 }
 
 export interface MatcherStats {

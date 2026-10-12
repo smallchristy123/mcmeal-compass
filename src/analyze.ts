@@ -254,7 +254,9 @@ export function analyzeSingle(
 
   // kJ/kcal 换算一致性（计划书 §5.3.7）：不一致即视为数据异常，降级且不入完整推荐
   const dataAnomalies: string[] = [];
-  let confidence = assignConfidence(m.nutrition, false);
+  // v3.6（甲案）：把「匹配方式」与「是否含推断」一并交给判据，
+  // 使 **A 级（官方单品精确直配且无推断）真正可达**——此前该档对单品永远关闭。
+  let confidence = assignConfidence(m.nutrition, { method: m.method, risky: m.risky });
   if (m.nutrition) {
     const check = checkEnergyConsistency(m.nutrition);
     if (check.status === 'inconsistent') {
