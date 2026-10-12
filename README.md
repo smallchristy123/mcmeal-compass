@@ -206,6 +206,7 @@ mcmeal-compass/
 │   ├── check-combo-decomposition.ts  # 套餐展开验证（在线，需 Token）
 │   ├── capture-fixtures.ts      # 采集（写 work/captures/，**不碰** fixtures/；在线，需 Token）
 │   └── secrets-scan.mjs         # 凭据扫描（工作树 + git 历史；白名单排除占位/测试假值）
+│   └── independent-online-verify.mjs  # 独立在线复核（串行低负载；仓库与交付包根目录均可直接运行）
 └── tests/                       # 单元测试（node:test，**327 个用例**）
     ├── v3-acceptance.test.ts    # v3 验收要求（R1–R10，**只可迁移、不可删改**）
     ├── v3-probe-regression.test.ts  # v3 复审探针 R11–R13 回归（首选元数据/来源口径/失败收据）
