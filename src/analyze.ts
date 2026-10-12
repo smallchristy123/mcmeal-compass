@@ -32,6 +32,48 @@ export interface NutritionEvidence {
   label: string;
 }
 
+/**
+ * 套餐组件的**结构化**留存（v3 整改，评审 R2）。
+ *
+ * 此前组件信息只以「展示文案」形式混在 `evidence[].label` 里，于是
+ * 「已匹配成功、但含普通可乐」的组件既进不了 `unmatchedComponents`，
+ * 也逃过了按名称的避糖检查。现在保留结构化组件，判定依据从「文案」回到「数据」。
+ */
+export interface ItemComponent {
+  /** 所属轮次（如「选择套餐内饮料」） */
+  roundName: string;
+  /** 选项编码（供计价/组成指纹使用） */
+  choiceCode: string;
+  /** 选项名（判定与展示用） */
+  choiceName: string;
+  /** 匹配到的官方营养名；未匹配为 null */
+  nutritionName: string | null;
+  /** 是否匹配到官方营养（false ⇒ 该组件成分**无法核实**） */
+  nutritionMatched: boolean;
+  /** 匹配方式（exact/alias/variant/risky/unmatched…）——供审核与解释 */
+  method: string;
+  quantity: number;
+}
+
+/**
+ * 数据来源的**执行事实**（v3 整改，评审 R7）。
+ *
+ * 由**取数方**（McpClient 或夹具加载器）产生，解释层只引用、不臆造：
+ * 离线读夹具就如实记 `channel: 'offline' / ok: false`，
+ * 绝不再出现「夹具加载被写成一次成功的 query-meals 调用」。
+ */
+export interface DataSourceReceipt {
+  tool: 'query-meals' | 'query-meal-detail' | 'list-nutrition-foods';
+  /** live = 本次真实调用；offline = 读本地夹具；history = 引用历史快照留档 */
+  channel: 'live' | 'offline' | 'history';
+  ok: boolean;
+  at: string;
+  argsSummary: string;
+  errorCode?: string;
+  /** 离线/历史来源须写明快照 id，便于核对"这份数据是哪个快照" */
+  snapshotId?: string;
+}
+
 /** 分析后的菜单项 */
 export interface AnalyzedItem {
   code: string;
@@ -46,6 +88,13 @@ export interface AnalyzedItem {
   evidence: NutritionEvidence[];
   /** 套餐中未匹配到营养的组件名 */
   unmatchedComponents: string[];
+  /**
+   * **结构化组件**（套餐展开后实际选中的那些；单品为空/缺省）——
+   * 避糖判定、组成指纹与解释均以此为准，不以展示文案为准。
+   */
+  components?: ItemComponent[];
+  /** 取数执行事实（由取数方产生；缺省表示"无执行证据"，解释层不得臆造） */
+  sourceTrace?: DataSourceReceipt[];
   /**
    * **份量歧义候选**（计划书 §5.3.3 的 variant）：
    * 有值时表示「该名称对应多种份量，需用户明确后才能给营养」——
@@ -86,16 +135,51 @@ export function looksLikeCombo(name: string): boolean {
   return COMBO_RE.test(name);
 }
 
+/** 取数来源上下文：让「分析」能够如实地把执行事实写进结果（评审 R7） */
+export interface DataSourceContext {
+  channel: 'live' | 'offline' | 'history';
+  /** 取数时刻（ISO 或响应里的 datetime） */
+  at: string;
+  /** 离线/历史来源须标明快照 id */
+  snapshotId?: string;
+}
+
+/** 由来源上下文生成**如实**的工具轨迹（live 才 ok:true） */
+function sourceReceipts(
+  tools: readonly ('query-meals' | 'query-meal-detail' | 'list-nutrition-foods')[],
+  source: DataSourceContext | undefined,
+  argsSummary = 'storeCode=<已脱敏>',
+): DataSourceReceipt[] | undefined {
+  if (!source) return undefined;
+  const live = source.channel === 'live';
+  return tools.map((tool) => ({
+    tool,
+    channel: source.channel,
+    ok: live,
+    at: source.at,
+    argsSummary,
+    ...(live
+      ? {}
+      : {
+          errorCode:
+            source.channel === 'offline' ? 'OFFLINE_FIXTURE' : 'HISTORY_SNAPSHOT',
+          snapshotId: source.snapshotId,
+        }),
+  }));
+}
+
 /**
  * 分析一个单品（或无法展开的项）：直接匹配营养表。
  *
  * @param variant 用户**显式指定**的份量或口味（计划书 §5.3.3 的 `variant` 维度）。
  *   指定后匹配器会走 `variant` 优先级；不指定则遇到歧义时**列候选请用户选**。
+ * @param source 取数来源（缺省则不留执行轨迹——**不留 ≠ 谎报成功**）
  */
 export function analyzeSingle(
   item: MenuItem,
   matcher: NutritionMatcher,
   variant?: string,
+  source?: DataSourceContext,
 ): AnalyzedItem {
   const m = matcher.match({ code: item.code, name: item.name, ...(variant ? { variant } : {}) });
   const notes = [...m.notes];
@@ -116,6 +200,7 @@ export function analyzeSingle(
     }
   }
 
+  const trace = sourceReceipts(['query-meals'], source);
   return {
     code: item.code,
     name: item.name,
@@ -128,6 +213,7 @@ export function analyzeSingle(
       ? [{ kind: 'official-single', label: `官方单品营养：${m.nutrition.productName}` }]
       : [],
     unmatchedComponents: [],
+    ...(trace ? { sourceTrace: trace } : {}),
     ...(m.sizeCandidates ? { sizeCandidates: m.sizeCandidates } : {}),
     ...(m.flavorCandidates ? { flavorCandidates: m.flavorCandidates } : {}),
     ...(dataAnomalies.length > 0 ? { dataAnomalies } : {}),
@@ -141,6 +227,7 @@ export function analyzeCombo(
   detail: MealDetail,
   matcher: NutritionMatcher,
   substitutions: readonly SubstitutionRequest[] = [],
+  source?: DataSourceContext,
 ): AnalyzedItem {
   const d = decomposeMeal(detail, matcher, substitutions);
   const evidence: NutritionEvidence[] = [
@@ -157,6 +244,19 @@ export function analyzeCombo(
       });
     }
   }
+
+  // 结构化组件留存（评审 R2）：判定避糖 / 生成组成指纹都以此为准
+  const components: ItemComponent[] = d.components.map((c) => ({
+    roundName: c.roundName,
+    choiceCode: c.choiceCode,
+    choiceName: c.choiceName,
+    nutritionName: c.match.nutrition?.productName ?? null,
+    nutritionMatched: c.match.nutrition !== null,
+    method: c.match.method,
+    quantity: c.quantity,
+  }));
+
+  const trace = sourceReceipts(['query-meals', 'query-meal-detail'], source);
 
   // 逐个组件做 kJ/kcal 换算校验——任一组件的记录不可信，整份合计就不可信
   const dataAnomalies: string[] = [];
@@ -186,6 +286,8 @@ export function analyzeCombo(
     confidence,
     evidence,
     unmatchedComponents: d.unmatchedComponents,
+    components,
+    ...(trace ? { sourceTrace: trace } : {}),
     ...(dataAnomalies.length > 0 ? { dataAnomalies } : {}),
     notes,
   };
@@ -226,6 +328,11 @@ export interface AnalyzeMenuOptions {
    * 未指定的条目若遇歧义，照常列候选请用户选——**不替其猜测**。
    */
   variants?: Record<string, string>;
+  /**
+   * 取数来源（评审 R7）：传入后，每条结果都会带上**如实的**工具轨迹。
+   * 不传则不留轨迹——**不留轨迹好过臆造一条成功的调用**。
+   */
+  source?: DataSourceContext;
 }
 
 /**
@@ -240,7 +347,7 @@ export async function analyzeMenu(
   loadDetail: ComboDetailLoader,
   options: AnalyzeMenuOptions = {},
 ): Promise<MenuAnalysis> {
-  const { concurrency = 4, limit, dedupe = true, onProgress, variants } = options;
+  const { concurrency = 4, limit, dedupe = true, onProgress, variants, source } = options;
   const variantOf = (code: string): string | undefined => variants?.[code];
 
   let list = [...items];
@@ -264,15 +371,15 @@ export async function analyzeMenu(
         try {
           const detail = await loadDetail(item.code);
           if (detail && detail.rounds.length > 0) {
-            results[idx] = analyzeCombo(item, detail, matcher);
+            results[idx] = analyzeCombo(item, detail, matcher, [], source);
             onProgress?.(++done, list.length);
             continue;
           }
           // 展开不了 → 降级为单品直配
-          results[idx] = analyzeSingle(item, matcher, variantOf(item.code));
+          results[idx] = analyzeSingle(item, matcher, variantOf(item.code), source);
           results[idx]!.notes.push('套餐详情不可用，已降级为「直接匹配」——结果可能不完整');
         } catch (e) {
-          results[idx] = analyzeSingle(item, matcher, variantOf(item.code));
+          results[idx] = analyzeSingle(item, matcher, variantOf(item.code), source);
           results[idx]!.notes.push(
             `套餐详情获取失败（${e instanceof Error ? e.message : String(e)}），已降级为直接匹配`,
           );
@@ -281,7 +388,7 @@ export async function analyzeMenu(
         continue;
       }
 
-      results[idx] = analyzeSingle(item, matcher, variantOf(item.code));
+      results[idx] = analyzeSingle(item, matcher, variantOf(item.code), source);
       onProgress?.(++done, list.length);
     }
   };
