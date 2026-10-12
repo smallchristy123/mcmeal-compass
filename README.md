@@ -156,6 +156,7 @@ node src/cli.ts --city 重庆市 --keyword 观音桥 --budget 35
 ```text
 mcmeal-compass/
 ├── README.md                    # 本文件
+├── SKILL.md                     # 可安装入口（Agent 装载用：用法 / 输出约定 / 边界）
 ├── CONTEST_DECLARATION.md       # 官方参赛声明（原样，未修改）
 ├── MCP_INTEGRATION.md           # 实测工具、调用证据与失败降级
 ├── mcp-config.example.json      # 脱敏配置示例（环境变量占位符）
@@ -180,6 +181,7 @@ mcmeal-compass/
 │   ├── aliases.ts               # 人工别名表（含风险标注）
 │   ├── decompose.ts             # 套餐展开与替换校验（缺失不补零、非法替换必拒）
 │   ├── analyze.ts               # 营养分析统一入口（单品直配 / 套餐展开收口 + 组件结构化留存）
+│   ├── detail-loader.ts         # 套餐详情加载器（失败**抛出原始错误** + 成功/失败两态缓存）
 │   ├── validate.ts              # kJ/kcal 换算一致性校验（异常即降级，不入完整推荐）
 │   ├── freshness.ts             # 数据新鲜度 TTL（分数据源；过期只能作历史样例）
 │   ├── capture-guard.ts         # 采集写入保护（大小写/前缀绕过与覆盖防护）
@@ -197,10 +199,12 @@ mcmeal-compass/
 │   ├── fixture-manifest.ts      # 快照 manifest 生成/校验（离线，复现门槛）
 │   ├── propose-aliases.ts       # 别名候选提案（离线，只提案不落库）
 │   ├── check-combo-decomposition.ts  # 套餐展开验证（在线，需 Token）
-│   └── capture-fixtures.ts      # 采集（写 work/captures/，**不碰** fixtures/；在线，需 Token）
-└── tests/                       # 单元测试（node:test，279 个用例）
+│   ├── capture-fixtures.ts      # 采集（写 work/captures/，**不碰** fixtures/；在线，需 Token）
+│   └── secrets-scan.mjs         # 凭据扫描（工作树 + git 历史；白名单排除占位/测试假值）
+└── tests/                       # 单元测试（node:test，**295 个用例**）
     ├── v3-acceptance.test.ts    # v3 验收要求（R1–R10，**只可迁移、不可删改**）
-    └── v3-probe-regression.test.ts  # v3 复审探针 R11–R13 回归（首选元数据/来源口径/失败收据）
+    ├── v3-probe-regression.test.ts  # v3 复审探针 R11–R13 回归（首选元数据/来源口径/失败收据）
+    └── v33-review-regression.test.ts # v3.2 复评回归（详情错误透传/混合轮次主件/禁止合成 live 成功）
 ```
 
 ## 开发与测试
