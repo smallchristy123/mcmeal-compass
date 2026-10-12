@@ -189,3 +189,14 @@ npm test                                          # 187 个用例
 
 另：**`--priority` 现在决定首选**（第 1 张卡），三卡仍是三种视角（评审 R10 的甲案）；
 新增 `--scope meal|all` 收窄「正餐候选」（默认排除甜品/冰饮/饮品）。
+
+### v3.1 追加（2026-10-12 · 复审 R11–R13）
+
+- **价格来源三态**：`official` / `official-unverified` / `menu`。最终复核未通过时**不得**保留 `official`；
+  「已核」措辞要求**来源与 `verified` 同时成立**（R12，P0）。
+- **首选元数据随实际方案重算**：最终复核淘汰方案后，`primaryKey`、`primaryNote`、展示顺序、
+  `shortfallNote` 一起重算，第一张卡恒等于 `primaryKey`（R11）。
+- **收据来自实际调用点**：`query-meal-detail` 的成功/空详情/抛错都在调用处写收据（含 `stage`、`requestId`、
+  实际商品 code）；离线与历史来源的成功展开**也不得**记 `ok:true`（R13）。
+- **回执含最终复核**：初始 + 最终收据合并重算，`attemptedFailures / offlineNotInitiated / skippedByBudget`
+  三者分开（「未发起」不再冒充「失败」）。

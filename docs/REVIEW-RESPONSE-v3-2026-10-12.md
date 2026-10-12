@@ -210,3 +210,51 @@ node <验收脚手架> <项目目录>                        # 期望 10/10 PASS
 `--priority` 已按甲案生效，入口收窄为「正餐候选 + 显式 `all`」。
 `npm run gate` 264 用例全绿，验收脚手架 **10/10 PASS**。
 **仍不应视为「验收通过」**：真实案例、人工审核与在线端验证尚未完成。
+
+---
+
+## 六、v3 复审（R11–R13）的整改 · 2026-10-12 追加
+
+复审来源：《McMeal Compass V3 高要求复审报告》＋补充探针 `mcmeal-v3-additional-probes-2026-10-12.mjs`。
+复审结论为「代码与离线测试大体通过，生产验收暂缓（Hold）」，新增三项阻断：**R12 为 P0，R11/R13 为 P1**。
+
+复跑结果（本机，Node 24.14.0）：**R11/R12/R13 全部 PASS**；R1–R10 仍 10/10 PASS；`npm run gate` **279 用例全绿**。
+
+### R12（P0）· 最终复核失败仍渲染「官方已核」
+
+| 要素 | 内容 |
+|---|---|
+| ① 反例 | 初次报价 ¥20；最终复核 TIMEOUT → 仍输出 `priceSource=official`、`verified=false`，解释句写「官方计价实付 ¥20.00（含优惠与费用，**已核**）。」 |
+| ② 修改 | `pricing.ts` 引入**三态来源** `PriceSource = official \| menu \| official-unverified`；`applyRequote` 在复核未通过时**不得**回退成 `official`（沿用初次金额者降为 `official-unverified`）；`explain.ts` 的价格句与证据标签**同时检查来源与 `verified`**，未核实一律不得出现「已核」，并明写「初次官方报价；最终复核未成功——未核实，不代表当前实付」；`cli.ts` 同步三分支标注 |
+| ③ 实际入口 | `applyRequote()` → `explainPlan()/collectEvidence()` → CLI 文本 |
+| ④ 通过日志 | 探针 **R12 PASS**（`priceSource=official-unverified`、`verified=false`、句中无「已核」）；回归测试 4 条（TIMEOUT / BAD_RESPONSE / SERVER_ERROR / 抛错）+ 正向 1 条（成功仍写「已核」） |
+| ⑤ 适用范围 | 全部报价展示与解释。**取值不变**：仍沿用初次金额作参考，改的是**来源与措辞的如实性** |
+
+### R11（P1）· 首选方案被淘汰后元数据失真
+
+| 要素 | 内容 |
+|---|---|
+| ① 反例 | 最终复核撤下 budget 方案后：`plans=[protein]` 但 `primaryKey='budget'`、`primaryNote` 仍称「首选即按该偏好选出」 |
+| ② 修改 | `finalizeWithRequote` 在过滤后**重算** `primaryKey`（原偏好仍在则保持；已被撤下则降级为实际第 1 张）、**重排展示顺序**使第一张恒等于 `primaryKey`、重写 `primaryNote`（明写「降级」）与 `shortfallNote`，并在推导过程留「首选降级」记录 |
+| ③ 实际入口 | `recommendForMenu() → finalizeWithRequote()` → `Recommendation.primaryKey/primaryNote` → CLI/JSON |
+| ④ 通过日志 | 探针 **R11 PASS**（`plans[0].key === primaryKey`）；回归测试 3 条（首选被撤 / 非首选被撤 / 全部被撤） |
+| ⑤ 适用范围 | 最终复核存在淘汰的所有情形。**注**：三个视角仍全部展示，偏好只决定首选与顺序 |
+
+### R13（P1）· 详情失败未写入真实失败收据
+
+| 要素 | 内容 |
+|---|---|
+| ① 反例 | 注入抛 TIMEOUT 的详情加载器 → `sourceTrace` 只有 `query-meals ok=true`，**没有** `query-meal-detail` 的失败记录（收据是按 `live` 上下文合成的） |
+| ② 修改 | 收据改为**在实际调用点产生**：`analyzeMenu` 在调用 `loadDetail` 处按真实结果写 `query-meal-detail` 收据，区分**成功 / 空详情（`EMPTY_DETAIL`）/ 抛错（`DETAIL_LOAD_FAILED` 或原错误码）**；收据新增 `stage`（menu/nutrition/combo-detail）与 `requestId`（可关联），`argsSummary` 含**实际餐品 code**（门店码脱敏）；`options.sourceReceipts` 允许取数方注入其在真实调用点产生的菜单/营养收据（`cli.ts` 离线=OFFLINE_FIXTURE、在线=live 均已接入）；**离线/历史的成功展开也不得记 `ok:true`** |
+| ③ 实际入口 | `analyzeMenu()`（调用点）→ `AnalyzedItem.sourceTrace` → `explainPlan()`；`cli.ts` 离线/在线两条取数路径 |
+| ④ 通过日志 | 探针 **R13 PASS**；回归测试 5 条（成功 / 空详情 / TIMEOUT / 解析错误 / 离线不得记成功），并断言**收据数量与实际调用次数相符** |
+| ⑤ 适用范围 | 全部取数轨迹。**已知边界**：单一候选未展开时不会有 detail 收据（因为确实没调用详情） |
+
+### 复审次要项
+
+| 项 | 处置 |
+|---|---|
+| 最终复核的请求未计入回执（低报） | `recommendForMenu` 在复核后**合并**初始与最终收据并重算 `summary`，替换「本次共发起…」条目 |
+| 离线未发起被计入「失败」 | `RequestSummary` 拆为 `attemptedFailures` / `offlineNotInitiated` / `skippedByBudget`，并注明「**未发起不等于失败**」 |
+| 包内缺 acceptance harness 与哈希清单 | 交付包改为**自包含**：内含 `mcmeal-v3-acceptance-harness.mjs`、`mcmeal-v3-additional-probes-2026-10-12.mjs`、两组结果与 **`SHA256SUMS.txt`** |
+| 上轮对本机 npm 的判断有误 | 本轮实测 `npm 11.9.0` 可用，`npm run gate` 全过；不再引用「无 npm」作为风险 |
