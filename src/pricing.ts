@@ -73,6 +73,8 @@ export interface PriceReceipt {
   retries?: number;
   /** 失败时的错误分类（如 RATE_LIMITED / TIMEOUT） */
   errorCode?: string;
+  /** 官方**业务错误码**（如限流的 508）；仅业务失败时存在，供证据核对 */
+  businessCode?: number;
   /** 失败说明（客户端保证已脱敏） */
   errorMessage?: string;
   /** 成功响应内容的 SHA-256 前 12 位（可用于交叉核对"当时到底返回了什么"） */
@@ -337,7 +339,7 @@ export async function confirmPrices(
       // ⚠️ 完整报价请求随行：组件与数量不再丢失（评审 R4）
       attempt = await pricer(item, request);
     } catch (e) {
-      const err = e as { code?: string; message?: string };
+      const err = e as { code?: string; message?: string; businessCode?: number };
       attempt = {
         quote: null,
         receipt: {
@@ -348,6 +350,7 @@ export async function confirmPrices(
           attempt: 1,
           retries: 0,
           ...(err.code === undefined ? {} : { errorCode: err.code }),
+          ...(err.businessCode === undefined ? {} : { businessCode: err.businessCode }),
           errorMessage: err.message ?? String(e),
           durationMs: 0,
           channel: 'live',
@@ -582,7 +585,7 @@ export async function requoteFinal(
   try {
     attempt = await pricer(candidate.item, request);
   } catch (e) {
-    const err = e as { code?: string; message?: string };
+    const err = e as { code?: string; message?: string; businessCode?: number };
     return {
       price: null,
       receipt: {
@@ -593,6 +596,7 @@ export async function requoteFinal(
         attempt: 1,
         retries: 0,
         ...(err.code === undefined ? {} : { errorCode: err.code }),
+        ...(err.businessCode === undefined ? {} : { businessCode: err.businessCode }),
         errorMessage: err.message ?? String(e),
         durationMs: 0,
         channel: 'live',

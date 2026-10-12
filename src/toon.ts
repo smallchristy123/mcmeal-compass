@@ -50,12 +50,22 @@ export class ToonParseError extends Error {
   readonly code: ToonErrorCode;
   /** 出错时的行号（从 1 计，指数据行；表头错误为 0） */
   readonly line: number;
+  /**
+   * 官方**业务错误码**（`success=false` 时信封里的 `code`）。
+   *
+   * 为什么单独留出来：真实端点上，**限流并不走 HTTP 429**——
+   * 实测（2026-10-12 压测，305 次请求）所有响应均为 `HTTP 200`，
+   * 被限的请求是 `success=false, code=508`、`message="太火爆了，请稍后再试"`。
+   * 若不把业务码带出去，客户端就只能把它当"服务端异常"，**既不会退避重试、也不会止损**。
+   */
+  readonly businessCode?: number;
 
-  constructor(code: ToonErrorCode, message: string, line = 0) {
+  constructor(code: ToonErrorCode, message: string, line = 0, businessCode?: number) {
     super(`[${code}] ${message}`);
     this.name = 'ToonParseError';
     this.code = code;
     this.line = line;
+    if (businessCode !== undefined) this.businessCode = businessCode;
   }
 }
 
@@ -311,6 +321,8 @@ export function unwrapMcpEnvelope(toolText: string): { envelope: unknown; data: 
       throw new ToonParseError(
         'BUSINESS_FAILURE',
         `官方返回业务失败（success=${String(success)}，code=${String(code)}）：${String(message ?? '无说明')}`,
+        0,
+        typeof code === 'number' && Number.isFinite(code) ? code : undefined,
       );
     }
     if ('data' in envelope) return { envelope, data: envelope['data'] };

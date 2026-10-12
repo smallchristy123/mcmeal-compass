@@ -248,3 +248,17 @@ npm test                                          # 187 个用例
   两者在**整体**上本就不同；**单品子集**上必须逐档相等。
 - **回归**：新增 `tests/v361-api-consistency.test.ts`（4 条：单品同值 / stats 与 summarize 一致 /
   职责边界差异已文档化 / 单品子集分布相等）；总计 **316 用例**。
+
+### v3.6.2 追加（2026-10-12 · 真实限流形态与整改）
+
+- **实测事实（真实端点）**：限流**不走 HTTP 429**。305 次响应全为 `HTTP 200`，
+  被限者是业务信封 `success=false, code=508`、`message="太火爆了，请稍后再试"`；
+  短时突发即触发（实测并发 24 档、第 62 个请求起）。
+  → 官方「每 Token 每分钟 600 次」的口径**未实测到**，本项目**以实测为准**。
+- **整改**：`RATE_LIMIT_BUSINESS_CODES = {508}` + 文案兜底；业务失败命中限流特征即升格
+  `RATE_LIMITED`（可重试）；**新增 `callToolEnvelope()` 把业务校验纳入有界退避重试**
+  （否则「可重试」只是标签——业务校验在 `rpc()` 重试循环之外）。
+- **效果（同门店同商品对照）**：不重试 11/73 对外失败 → `maxRetries=2` 时 **305/305 成功、0 对外失败**（80 次重试吸收）。
+- **证据**：`work/online-evidence/ratelimit-sample.json`（A）、`ratelimit-retry-sample.json`（B）、
+  `serial-attribution.json`（C 串行基线）、`ratelimit-sample-prefix-raw.json`（修前）。
+- **探针自身缺陷并已修**：中断时「先 break 后 record」使已发出请求未入账，导致重试计数虚高（12 → 修正后 0）。

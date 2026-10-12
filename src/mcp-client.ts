@@ -49,23 +49,43 @@ export class McpError extends Error {
   /** 是否值得重试 */
   readonly retryable: boolean;
   readonly status?: number;
+  /** 官方**业务错误码**（信封里的 `code`）；业务失败时才有 */
+  readonly businessCode?: number;
   /** 给用户看的安全提示（**绝不含 Token**） */
   readonly hint: string;
 
-  constructor(code: McpErrorCode, message: string, init: { retryable?: boolean; status?: number; hint?: string } = {}) {
+  constructor(
+    code: McpErrorCode,
+    message: string,
+    init: { retryable?: boolean; status?: number; businessCode?: number; hint?: string } = {},
+  ) {
     super(message);
     this.name = 'McpError';
     this.code = code;
     this.retryable = init.retryable ?? false;
     this.status = init.status;
+    if (init.businessCode !== undefined) this.businessCode = init.businessCode;
     this.hint = init.hint ?? DEFAULT_HINTS[code];
   }
 }
 
+/**
+ * 官方**限流的业务错误码**（实测，2026-10-12 真实压测）。
+ *
+ * ⚠️ 关键事实：真实端点上的限流**不走 HTTP 429**——305 次请求全部返回 `HTTP 200`，
+ * 被限者是 `success=false, code=508`、`message="太火爆了，请稍后再试"`。
+ * 因此仅靠 `res.status === 429` 判限流是**判不到的**（客户端既不会退避、也不会止损）。
+ */
+export const RATE_LIMIT_BUSINESS_CODES: ReadonlySet<number> = new Set([508]);
+
+/** 业务失败信息里出现这些字样，也按限流对待（兜底：官方新增码时的软匹配） */
+const RATE_LIMIT_MESSAGE_RE = /(太火爆|稍后再试|请稍候|频率|限流|too\s*many\s*requests|rate\s*limit)/i;
+
 const DEFAULT_HINTS: Record<McpErrorCode, string> = {
   NO_TOKEN: '尚未配置 MCP Token，请先到 open.mcd.cn 申请并填入本地配置（勿外发）。',
   UNAUTHORIZED: '凭据无效或已过期。请检查本地配置中的 Token 是否正确（**无需、也不要把它发给我**）。',
-  RATE_LIMITED: '调用过于频繁（官方限流 600 次/分）。已做退避重试，请稍候再试。',
+  RATE_LIMITED:
+    '调用过于频繁，官方已限流（实测形态：HTTP 200 + 业务 code=508「太火爆了，请稍后再试」）。已做退避重试，请稍候再试。',
   TIMEOUT: '请求超时。请检查网络与代理设置后重试。',
   NETWORK: '网络不可达。若在受限网络环境下，请检查代理是否可用。',
   SERVER_ERROR: '官方服务返回异常。可稍后重试；若持续失败，请检查官方状态。',
@@ -483,12 +503,71 @@ export class McpClient {
     };
   }
 
+  /**
+   * 调用工具并**过完四层校验**（HTTP → JSON-RPC → 工具 `isError` → 业务 `success`/`code`），
+   * 返回 `{ text, data }`。
+   *
+   * ⚠️ v3.6.2：**业务层限流必须在这一层有界重试**。
+   * 实测限流是 `HTTP 200 + 业务 code=508`——它在 `rpc()` 的 HTTP 层看来是"成功"，
+   * 故 HTTP 层的重试循环**永远看不到它**。若只把它标成 `retryable` 而不在此处置，
+   * 「已做退避重试」就只是句空话（一次也不会重试）。
+   */
+  private async callToolEnvelope(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ text: string; data: unknown }> {
+    let lastErr: McpError | undefined;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      const text = await this.callToolText(name, args);
+      try {
+        return { text, data: unwrapMcpEnvelope(text).data };
+      } catch (e) {
+        if (e instanceof ToonParseError && e.code === 'BUSINESS_FAILURE') {
+          lastErr = this.toBusinessFailure(name, e);
+        } else {
+          throw new McpError(
+            'BAD_RESPONSE',
+            `工具 ${name} 返回无法解析：${redactToken(e instanceof Error ? e.message : String(e), this.token)}`,
+          );
+        }
+      }
+      if (!lastErr.retryable || attempt === this.maxRetries) throw lastErr;
+      await this.sleep(Math.min(this.backoffBaseMs * 2 ** attempt, this.backoffMaxMs));
+    }
+    throw lastErr ?? new McpError('UNKNOWN', '未知失败');
+  }
+
   /** 调用工具并返回**原始工具文本**（供夹具采集：既要原文，也要过同一套错误校验） */
   async callToolRaw(name: string, args: Record<string, unknown> = {}): Promise<string> {
-    const text = await this.callToolText(name, args);
-    // 业务层校验照样跑：采集时若官方返回业务失败，应当**立刻暴露**，而不是把错误存成夹具
-    unwrapMcpEnvelope(text);
-    return text;
+    // 业务层校验照样跑（含限流重试）：采集时若官方返回业务失败，应当**立刻暴露**，
+    // 而不是把错误存成夹具。
+    return (await this.callToolEnvelope(name, args)).text;
+  }
+
+  /**
+   * 业务失败的**分级**（R8 分层验证的最后一层；v3.6.2 补）。
+   *
+   * 实测（2026-10-12 真实压测）：**限流不走 HTTP 429**——305 次响应全为 `HTTP 200`，
+   * 被限者是 `success=false, code=508`、`message="太火爆了，请稍后再试"`。
+   * 故这里把「业务码或文案命中限流特征」的失败**升格为 `RATE_LIMITED`（retryable）**。
+   * 不这么做，它会被当成 `SERVER_ERROR`（不可重试）——**既不会退避重试，也不会触发计价止损**，
+   * 而计价层 `isRateLimited()` 的「限流即停」策略会永远落空。
+   */
+  private toBusinessFailure(name: string, e: ToonParseError): McpError {
+    const msg = redactToken(e.message, this.token);
+    const bc = e.businessCode;
+    const looksRateLimited =
+      (bc !== undefined && RATE_LIMIT_BUSINESS_CODES.has(bc)) || RATE_LIMIT_MESSAGE_RE.test(msg);
+    if (looksRateLimited) {
+      return new McpError(
+        'RATE_LIMITED',
+        `工具 ${name} 触发官方限流（业务 code=${String(bc ?? '?')}；HTTP 200）——${msg}`,
+        { retryable: true, ...(bc === undefined ? {} : { businessCode: bc }) },
+      );
+    }
+    return new McpError('SERVER_ERROR', `工具 ${name} ${msg}`, {
+      ...(bc === undefined ? {} : { businessCode: bc }),
+    });
   }
 
   /** 取工具文本（含工具级 isError 校验），不做业务层拆包 */
@@ -517,19 +596,8 @@ export class McpClient {
    * 任一层失败都**不得**被当作成功数据——尤其不能让「显式失败」变成「官方已核实 0 元」。
    */
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    const text = await this.callToolText(name, args);
-    try {
-      // ② 业务级失败：success=false / code>=400 → 抛错，不进业务层
-      return unwrapMcpEnvelope(text).data;
-    } catch (e) {
-      if (e instanceof ToonParseError && e.code === 'BUSINESS_FAILURE') {
-        throw new McpError('SERVER_ERROR', `工具 ${name} ${redactToken(e.message, this.token)}`);
-      }
-      throw new McpError(
-        'BAD_RESPONSE',
-        `工具 ${name} 返回无法解析：${redactToken(e instanceof Error ? e.message : String(e), this.token)}`,
-      );
-    }
+    // 业务层校验（含限流的有界重试）统一收口在 callToolEnvelope
+    return (await this.callToolEnvelope(name, args)).data;
   }
 
   /** 工具清单（用于自检连通性与能力） */

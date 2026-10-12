@@ -345,7 +345,7 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
       priceCache.set(key, attempt);
       return attempt;
     } catch (e) {
-      const err = e as { code?: string; message?: string; status?: number };
+      const err = e as { code?: string; message?: string; status?: number; businessCode?: number };
       const attempt: PriceAttempt = {
         quote: null,
         receipt: {
@@ -353,6 +353,7 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
           ok: false,
           attempt: 1,
           ...(err.code === undefined ? {} : { errorCode: err.code }),
+          ...(err.businessCode === undefined ? {} : { businessCode: err.businessCode }),
           errorMessage: err.message ?? String(e),
           durationMs: Date.now() - started,
           channel: 'live',
