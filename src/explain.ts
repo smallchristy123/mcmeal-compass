@@ -65,12 +65,22 @@ export function collectEvidence(priced: PricedCandidate): EvidenceRef[] {
         : `combo:${priced.item.code}`;
     refs.push({ id, kind: ev.kind, label: ev.label });
   }
-  // ⚠️ 只有**官方确实给了价格**才作证据；拿不到报价时不得凭空造一条"官方计价"
-  if (priced.quote && priced.quote.price !== null) {
+  // ⚠️ 只有**官方确实给了价格且通过核对**才作「已核」证据（R12）：
+  //    拿不到报价、或最终复核失败而沿用初次金额，都不得写成"官方计价已核"
+  if (priced.quote && priced.quote.price !== null && priced.verified) {
     refs.push({
       id: `price:${priced.item.code}`,
       kind: 'official-price',
-      label: `官方计价：${formatCents(priced.quote.price)}（原价 ${priced.quote.originalPrice === null ? '—' : formatCents(priced.quote.originalPrice)}，优惠 ${priced.quote.discount === null ? '—' : formatCents(priced.quote.discount)}）`,
+      label: `官方计价（已核对）：${formatCents(priced.quote.price)}（原价 ${priced.quote.originalPrice === null ? '—' : formatCents(priced.quote.originalPrice)}，优惠 ${priced.quote.discount === null ? '—' : formatCents(priced.quote.discount)}）`,
+    });
+  } else if (priced.priceSource === 'official-unverified') {
+    refs.push({
+      id: `price:${priced.item.code}`,
+      kind: 'official-price',
+      label:
+        `初次官方报价（**未通过最终复核**，不代表当前实付）：` +
+        `${priced.effectivePrice === null ? '—' : formatCents(priced.effectivePrice)}` +
+        `${priced.receipt?.errorCode ? `（复核失败：${priced.receipt.errorCode}）` : ''}`,
     });
   } else if (priced.receipt && !priced.receipt.ok) {
     refs.push({
@@ -133,13 +143,18 @@ export function explainPlan(
       `，营养可信度 ${it.confidence} 级。`,
   );
 
-  // 价格
+  // 价格——**来源与「已核实」必须同时成立**才可用「官方实付…已核」的措辞（R12）
   if (priced.effectivePrice !== null) {
-    statements.push(
-      priced.priceSource === 'official'
-        ? `官方计价实付 ${formatCents(priced.effectivePrice)}（含优惠与费用，已核）。`
-        : `菜单价 ${formatCents(priced.effectivePrice)}——**官方计价未取得，未核实实付**。`,
-    );
+    if (priced.priceSource === 'official' && priced.verified) {
+      statements.push(`官方计价实付 ${formatCents(priced.effectivePrice)}（含优惠与费用，已核）。`);
+    } else if (priced.priceSource === 'official-unverified') {
+      statements.push(
+        `${formatCents(priced.effectivePrice)} 系**初次官方报价**；最终复核未成功` +
+          `（${priced.receipt.errorCode ?? '未知原因'}）——**未核实**，不代表当前实付。`,
+      );
+    } else {
+      statements.push(`菜单价 ${formatCents(priced.effectivePrice)}——**官方计价未取得，未核实实付**。`);
+    }
   } else {
     statements.push('价格未取得，无法给出金额。');
   }

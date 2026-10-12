@@ -13,7 +13,7 @@
 
 import { NutritionMatcher, type Confidence } from './matching.ts';
 import { DEFAULT_ALIASES } from './aliases.ts';
-import { analyzeMenu, type AnalyzedItem } from './analyze.ts';
+import { analyzeMenu, type AnalyzedItem, type DataSourceReceipt } from './analyze.ts';
 import { loadFixtures, fixtureDetailLoader } from './fixtures.ts';
 import { McpClient, McpError } from './mcp-client.ts';
 import { formatCents } from './money.ts';
@@ -151,6 +151,11 @@ interface Sourced {
   capturedAtByKind: { menu: string; nutrition: string; detail: string; price: string };
   /** 取数来源（供执行轨迹**如实**标注，评审 R7） */
   dataOrigin: { channel: 'live' | 'offline'; snapshotId?: string };
+  /**
+   * 取数方在**实际调用点**产生的收据（R13）：
+   * 离线＝读夹具（标 OFFLINE_FIXTURE，不伪装成已调用）；在线＝真实调用（标 live/ok）。
+   */
+  sourceReceipts: DataSourceReceipt[];
   items: MenuItem[];
   nutritionRows: NutritionRow[];
   loadDetail: (code: string) => Promise<MealDetail | null>;
@@ -162,6 +167,7 @@ interface Sourced {
 /** 离线：读夹具 */
 async function loadFromFixtures(): Promise<Sourced> {
   const b = await loadFixtures();
+  const at = new Date().toISOString();
   return {
     storeCode: b.storeCode,
     storeName: b.storeName,
@@ -173,6 +179,31 @@ async function loadFromFixtures(): Promise<Sourced> {
       price: b.datetimes.price,
     },
     dataOrigin: { channel: 'offline', snapshotId: b.snapshotId },
+    // 读夹具也留**真实**收据：如实标 offline + OFFLINE_FIXTURE（**不**伪装成已调用）
+    sourceReceipts: [
+      {
+        tool: 'query-meals',
+        channel: 'offline',
+        ok: false,
+        at,
+        argsSummary: 'storeCode=<已脱敏>（读本地快照）',
+        errorCode: 'OFFLINE_FIXTURE',
+        snapshotId: b.snapshotId,
+        stage: 'menu',
+        requestId: `snapshot:${b.snapshotId}#query-meals`,
+      },
+      {
+        tool: 'list-nutrition-foods',
+        channel: 'offline',
+        ok: false,
+        at,
+        argsSummary: '（无参数；读本地快照）',
+        errorCode: 'OFFLINE_FIXTURE',
+        snapshotId: b.snapshotId,
+        stage: 'nutrition',
+        requestId: `snapshot:${b.snapshotId}#list-nutrition-foods`,
+      },
+    ],
     items: b.menuItems,
     nutritionRows: b.nutritionRows,
     loadDetail: fixtureDetailLoader(b),
@@ -227,13 +258,33 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
     storeName = first.storeName;
   }
 
+  // 取数收据在**真实调用点**产生（R13）：成功即 ok=true，失败会抛错并被上层捕获
+  const sourceReceipts: DataSourceReceipt[] = [];
   const { items } = await client.getMenu({ storeCode, orderType: 1, beType: 1 });
+  sourceReceipts.push({
+    tool: 'query-meals',
+    channel: 'live',
+    ok: true,
+    at: new Date().toISOString(),
+    argsSummary: 'storeCode=<已脱敏>',
+    stage: 'menu',
+    requestId: 'live#query-meals',
+  });
 
   // 营养表（在线模式下单独取一次）
   const nutData = (await client.callTool('list-nutrition-foods', {})) as { data?: string };
   if (typeof nutData?.data !== 'string') {
     throw new McpError('BAD_RESPONSE', '营养表返回结构异常（缺 data 字段）');
   }
+  sourceReceipts.push({
+    tool: 'list-nutrition-foods',
+    channel: 'live',
+    ok: true,
+    at: new Date().toISOString(),
+    argsSummary: '（无参数）',
+    stage: 'nutrition',
+    requestId: 'live#list-nutrition-foods',
+  });
   const nutritionRows = toNutritionRows(parseToon(nutData.data)).rows;
 
   const detailCache = new Map<string, MealDetail | null>();
@@ -321,6 +372,7 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
     // 在线模式的四类数据都产生于本次调用（价格单独用报价收据的时刻）
     capturedAtByKind: { menu: nowIso, nutrition: nowIso, detail: nowIso, price: nowIso },
     dataOrigin: { channel: 'live' },
+    sourceReceipts,
     items,
     nutritionRows,
     loadDetail,
@@ -556,9 +608,15 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
       const t = it.totals;
       L.push(`【方案 ${i + 1} · ${p.label}${i === 0 ? '（首选）' : ''}】`);
       L.push(`  名称    ${it.name}（${it.kind === 'combo' ? `套餐·${it.evidence.length - 1} 项组成` : '单品'}）`);
+      const srcLabel =
+        p.priced.priceSource === 'official' && p.priced.verified
+          ? '（官方计价已核实）'
+          : p.priced.priceSource === 'official-unverified'
+            ? '（初次报价；最终复核未成功——未核实，不代表当前实付）'
+            : '（菜单价，未核实实付）';
       L.push(
         `  实付    ${p.priced.effectivePrice === null ? '—' : formatCents(p.priced.effectivePrice)}` +
-          `${p.priced.priceSource === 'official' ? '（官方计价已核实）' : '（菜单价，未核实实付）'}`,
+          srcLabel,
       );
       const fmt = (v: number | null, u: string, complete = true) =>
         v === null ? '—' : `${complete ? '' : '≥'}${v}${u}`;
@@ -649,6 +707,8 @@ export async function runAnalysis(
       at: new Date().toISOString(),
       ...(src.dataOrigin.snapshotId === undefined ? {} : { snapshotId: src.dataOrigin.snapshotId }),
     },
+    // 取数收据来自**实际调用点**（R13）；套餐详情的收据由 analyzeMenu 在调用处补写
+    sourceReceipts: src.sourceReceipts,
     ...(onProgress ? { onProgress } : {}),
     ...(Object.keys(variantsByCode).length > 0 ? { variants: variantsByCode } : {}),
   });

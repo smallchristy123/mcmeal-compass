@@ -86,6 +86,19 @@ export interface PriceReceipt {
   requestFingerprint?: string;
 }
 
+/**
+ * 价格来源（**三态，R12 整改**）：
+ *   · `official`             —— 本次报价**已通过核对**（可用于「官方实付」措辞）；
+ *   · `official-unverified`  —— 金额来自**初次**官方报价，但**最终复核未成功**：
+ *                               金额可以留作参考，但**不得**声称「已核」；
+ *   · `menu`                 —— 菜单价（官方价未取得）。
+ *
+ * ⚠️ 病根（v3 被复审判 P0）：最终复核失败时，`applyRequote` 把来源回退成 `candidate.priceSource`，
+ * 于是「初次官方价 + 复核失败」被渲染成「官方计价实付…（含优惠与费用，已核）」
+ * ——**未核实却写着已核**，正是最该被阻断的一类不一致。
+ */
+export type PriceSource = 'official' | 'menu' | 'official-unverified';
+
 export interface PricedCandidate {
   item: AnalyzedItem;
   /** 官方计价结果；null 表示未取得（此时价格来源为菜单价） */
@@ -94,8 +107,8 @@ export interface PricedCandidate {
   receipt: PriceReceipt;
   /** 用于比较的金额（分） */
   effectivePrice: Cents | null;
-  /** 价格来源，**必须如实标注** */
-  priceSource: 'official' | 'menu';
+  /** 价格来源，**必须如实标注**（三态，见 `PriceSource`） */
+  priceSource: PriceSource;
   withinBudget: boolean;
   /** 超出预算的金额（分）；未超为 0 */
   overByCents: number;
@@ -456,16 +469,27 @@ export async function confirmPrices(
 
 // ─────────────────── 请求事实汇总（评审 R6） ───────────────────
 
-/** 「本次到底做了什么」的如实统计——候选/离线/缓存/真实请求/成败/未发起 */
+/**
+ * 「本次到底做了什么」的如实统计——候选/离线/缓存/真实请求/成败/未发起。
+ *
+ * ⚠️ R12 复审的次要项：旧版把「离线夹具未发起」也算进 `failed`，
+ * 读的人容易以为「离线跑了 15 次全失败」。现在**拆成三个不同字段**：
+ * `attemptedFailures`（真发起过但失败）／`offlineNotInitiated`（离线未发起）／
+ * `skippedByBudget`（因预算或止损未发起）。
+ */
 export interface RequestSummary {
   candidates: number;
   /** 真实 HTTP 请求次数（离线=0、缓存命中不计） */
   liveAttempts: number;
   cacheHits: number;
   offlineReads: number;
-  notInitiated: number;
+  /** 离线夹具下的「未发起」——**不是失败** */
+  offlineNotInitiated: number;
+  /** 因请求预算/止损而未发起 */
+  skippedByBudget: number;
+  /** **发起过**但失败（真实尝试中的失败） */
+  attemptedFailures: number;
   succeeded: number;
-  failed: number;
   retries: number;
   verified: number;
   unverified: number;
@@ -478,12 +502,17 @@ export function summarizeReceipts(
 ): RequestSummary {
   const cacheHits = receipts.filter((r) => r.channel === 'cache').length;
   const offlineReads = receipts.filter((r) => r.channel === 'offline').length;
-  const notInitiated = receipts.filter((r) => r.attempt === 0).length;
+  const offlineNotInitiated = receipts.filter(
+    (r) => r.attempt === 0 && r.channel === 'offline',
+  ).length;
+  const skippedByBudget = receipts.filter(
+    (r) => r.attempt === 0 && r.channel !== 'offline',
+  ).length;
   const liveAttempts = receipts.filter(
     (r) => r.attempt >= 1 && r.channel !== 'cache' && r.channel !== 'offline',
   ).length;
-  const succeeded = receipts.filter((r) => r.ok).length;
-  const failed = receipts.filter((r) => !r.ok).length;
+  const succeeded = receipts.filter((r) => r.attempt >= 1 && r.ok).length;
+  const attemptedFailures = receipts.filter((r) => r.attempt >= 1 && !r.ok).length;
   const retries = receipts.reduce((n, r) => n + (r.retries ?? 0), 0);
   const candidates = receipts.length;
 
@@ -492,16 +521,19 @@ export function summarizeReceipts(
     liveAttempts,
     cacheHits,
     offlineReads,
-    notInitiated,
+    offlineNotInitiated,
+    skippedByBudget,
+    attemptedFailures,
     succeeded,
-    failed,
     retries,
     verified: verifiedCount,
     unverified: candidates - verifiedCount,
     note:
       `本次共发起 ${liveAttempts} 次真实官方计价请求` +
-      `（候选 ${candidates} 项；离线读取 ${offlineReads}；缓存命中 ${cacheHits}；` +
-      `未发起 ${notInitiated}；成功 ${succeeded}；失败 ${failed}；重试 ${retries}）。`,
+      `（候选 ${candidates} 项；成功 ${succeeded}；发起后失败 ${attemptedFailures}；` +
+      `离线读取 ${offlineReads}（其中未发起 ${offlineNotInitiated}）；缓存命中 ${cacheHits}；` +
+      `因预算/止损未发起 ${skippedByBudget}；重试 ${retries}）。` +
+      `　注：**未发起不等于失败**——离线夹具与预算止损都未发起过请求。`,
   };
 }
 
@@ -613,6 +645,10 @@ export async function requoteFinal(
 /**
  * 把最终复核结果落回候选：重算预算判定、价格来源与「已核实」标记。
  * （评审 C：复核变价后，预算/评分/解释都必须跟着变。）
+ *
+ * ⚠️ R12：复核**未通过**时，来源**不得**继续是 `official`——
+ * 沿用初次金额可以，但必须降为 `official-unverified`（或 `menu`），
+ * 否则展示层会把它渲染成「已核」。
  */
 export function applyRequote(
   candidate: PricedCandidate,
@@ -620,9 +656,18 @@ export function applyRequote(
   budgetCents: Cents,
 ): PricedCandidate {
   const effectivePrice = requote.price ?? candidate.effectivePrice;
-  const priceSource: 'official' | 'menu' = requote.verified ? 'official' : candidate.priceSource;
+  const hadOfficialPrice = candidate.priceSource === 'official' || candidate.quote !== null;
+  const priceSource: PriceSource = requote.verified
+    ? 'official'
+    : hadOfficialPrice
+      ? 'official-unverified'
+      : 'menu';
   const overByCents =
     effectivePrice === null ? Number.POSITIVE_INFINITY : Math.max(0, effectivePrice - budgetCents);
+  const failureNote = requote.verified
+    ? `最终复核：${requote.note}`
+    : `最终复核：${requote.note}` +
+      `（沿用初次金额时仅作参考——**未核实，不代表当前实付**，来源标记 ${priceSource}）`;
   return {
     ...candidate,
     quote: requote.quote ?? candidate.quote,
@@ -632,6 +677,6 @@ export function applyRequote(
     verified: requote.verified,
     withinBudget: effectivePrice !== null && effectivePrice <= budgetCents,
     overByCents,
-    notes: [...candidate.notes, `最终复核：${requote.note}`],
+    notes: [...candidate.notes, failureNote],
   };
 }

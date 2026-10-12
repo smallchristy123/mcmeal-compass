@@ -16,7 +16,7 @@
 import type { AnalyzedItem } from './analyze.ts';
 import type { ConstraintOutcome, MealRequest, Priority } from './constraints.ts';
 import { applyHardConstraints, checkNonPriceConstraints } from './constraints.ts';
-import type { PricedCandidate, PricingOutcome, Pricer } from './pricing.ts';
+import type { PricedCandidate, PricingOutcome, Pricer, PriceReceipt } from './pricing.ts';
 import { confirmPrices, requoteFinal, applyRequote, summarizeReceipts } from './pricing.ts';
 import {
   buildScoreContext,
@@ -342,7 +342,24 @@ export async function recommendForMenu(
   let recommendation = buildRecommendation({ outcome, pricing, req });
 
   // ⑤ 最终复核——**真正执行**（此前 requoteFinal 只被定义与测试，主流程 0 处调用）
-  recommendation = await finalizeWithRequote(recommendation, pricer, budgetCents, req);
+  const fin = await finalizeWithRequote(recommendation, pricer, budgetCents, req);
+  recommendation = fin.recommendation;
+
+  // ⑥ 回执要把**最终复核**的请求也算进去（复审次要项：否则最终请求数与成功数被低报）
+  const allReceipts = [...pricing.receipts, ...fin.receipts];
+  const summary = summarizeReceipts(allReceipts, pricing.summary.verified + fin.verifiedCount);
+  const stripSummary = (arr: readonly string[]): string[] =>
+    arr.filter((n) => !n.startsWith('本次共发起'));
+  pricing = {
+    ...pricing,
+    receipts: allReceipts,
+    summary,
+    notes: [...stripSummary(pricing.notes), summary.note],
+  };
+  recommendation = {
+    ...recommendation,
+    notes: [...stripSummary(recommendation.notes), summary.note],
+  };
 
   return { recommendation, outcome, pricing };
 }
@@ -351,25 +368,32 @@ export async function recommendForMenu(
  * 对最终入选方案做**最终官方复核**，并把结果落回卡片。
  *
  * 三条不可省：
- *   1. 复核失败/未通过对象核对 ⇒ 该方案价格标「未核实」，**不得以菜单价充当实付价**；
+ *   1. 复核失败/未通过对象核对 ⇒ 该方案价格标「未核实」，**不得以菜单价充当实付价**，
+ *      也**不得**保留 `official` 来源（R12）；
  *   2. 复核后超出预算 ⇒ 从「预算内方案」里撤下（评审 C：20→40 时不得仍以 20 元出现）；
- *   3. 变价后**重算评分与解释**，避免卡片上的分数与展示价对不上（评审 E）。
+ *   3. 变价后**重算评分与解释**，并**按实际保留的方案重算首选元数据与展示顺序**（R11）。
  */
 async function finalizeWithRequote(
   recommendation: Recommendation,
   pricer: Pricer,
   budgetCents: Cents,
   req: MealRequest,
-): Promise<Recommendation> {
-  if (recommendation.plans.length === 0) return recommendation;
+): Promise<{ recommendation: Recommendation; receipts: PriceReceipt[]; verifiedCount: number }> {
+  if (recommendation.plans.length === 0) {
+    return { recommendation, receipts: [], verifiedCount: 0 };
+  }
 
   const notes = [...recommendation.notes];
   const kept: PricedCandidate[] = [];
   const droppedNotes: string[] = [];
+  const receipts: PriceReceipt[] = [];
+  let verifiedCount = 0;
 
   for (const plan of recommendation.plans) {
     const requote = await requoteFinal(plan.priced, pricer);
+    receipts.push(requote.receipt);
     const priced = applyRequote(plan.priced, requote, budgetCents);
+    if (priced.verified) verifiedCount++;
 
     const violation = checkNonPriceConstraints(priced.item, req);
     if (violation) {
@@ -413,22 +437,60 @@ async function finalizeWithRequote(
       };
     });
 
+  // ⭐ R11：首选元数据必须与**实际保留**的方案一致
+  const originalPrimary = recommendation.primaryKey;
+  const primaryStillHere = plans.some((p) => p.key === originalPrimary);
+  const primaryKey: Priority = primaryStillHere
+    ? originalPrimary
+    : (plans[0]?.key ?? originalPrimary);
+
+  // 展示顺序：实际首选必须落在第 1 张（与 primaryKey 严格一致）
+  const ordered = [...plans];
+  const primaryIdx = ordered.findIndex((p) => p.key === primaryKey);
+  if (primaryIdx > 0) {
+    const [head] = ordered.splice(primaryIdx, 1);
+    ordered.unshift(head!);
+  }
+
+  let primaryNote: string;
+  if (ordered.length === 0) {
+    primaryNote =
+      `本轮偏好＝${LABELS[originalPrimary]}：**最终复核后已无可用方案**——如实为空，` +
+      `不保留任何「首选」字样。`;
+  } else if (primaryStillHere) {
+    primaryNote =
+      `本轮偏好＝${LABELS[originalPrimary]}：三张卡各对应一种视角，` +
+      `**首选（第 1 张）即按该偏好选出**，其余供横向对照。`;
+  } else {
+    primaryNote =
+      `本轮偏好＝${LABELS[originalPrimary]}，但**该视角的方案在最终复核后被撤下**（原因见「推导过程」），` +
+      `故首选**降级为实际第 1 张「${LABELS[primaryKey]}」**——不保留已不存在的偏好标签。`;
+    notes.push(
+      `首选降级：${LABELS[originalPrimary]} 视角已被撤下，` +
+        `primaryKey 与实际第 1 张统一为「${LABELS[primaryKey]}」。`,
+    );
+  }
+
   // 复核会丢弃旧的对照句，这里在最后一张卡上补回（口径一致）
-  if (plans.length >= 2) {
-    const base = plans[plans.length - 1]!;
-    const other = plans[0]!;
+  if (ordered.length >= 2) {
+    const base = ordered[ordered.length - 1]!;
+    const other = ordered[0]!;
     base.explanation.statements.push('—— 与「' + other.label + '」对照 ——');
     base.explanation.statements.push(...comparePlans(base.priced, other.priced, energyOptions(req)));
   }
 
   let shortfallNote = recommendation.shortfallNote;
-  if (plans.length < recommendation.plans.length) {
+  if (ordered.length < recommendation.plans.length) {
     shortfallNote =
-      `最终复核后有 ${recommendation.plans.length - plans.length} 个方案不再成立（原因见「推导过程」），` +
-      `故仅给出 ${plans.length} 个方案——**不拿复核前的旧价充数**。`;
+      `最终复核后有 ${recommendation.plans.length - ordered.length} 个方案不再成立（原因见「推导过程」），` +
+      `故仅给出 ${ordered.length} 个方案——**不拿复核前的旧价充数**。`;
   }
 
-  return { ...recommendation, plans, shortfallNote, notes };
+  return {
+    recommendation: { ...recommendation, plans: ordered, primaryKey, primaryNote, shortfallNote, notes },
+    receipts,
+    verifiedCount,
+  };
 }
 
 /** 应用默认预算（供测试与演示） */

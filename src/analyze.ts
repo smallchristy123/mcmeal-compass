@@ -56,11 +56,12 @@ export interface ItemComponent {
 }
 
 /**
- * 数据来源的**执行事实**（v3 整改，评审 R7）。
+ * 数据来源的**执行事实**（v3 整改，评审 R7；R13 补强）。
  *
- * 由**取数方**（McpClient 或夹具加载器）产生，解释层只引用、不臆造：
+ * 由**取数方**（McpClient 或夹具加载器）在**实际调用点**产生，解释层只引用、不臆造：
  * 离线读夹具就如实记 `channel: 'offline' / ok: false`，
- * 绝不再出现「夹具加载被写成一次成功的 query-meals 调用」。
+ * 绝不再出现「夹具加载被写成一次成功的 query-meals 调用」，
+ * 也**不按"live 上下文"推断某次调用成功**。
  */
 export interface DataSourceReceipt {
   tool: 'query-meals' | 'query-meal-detail' | 'list-nutrition-foods';
@@ -70,8 +71,14 @@ export interface DataSourceReceipt {
   at: string;
   argsSummary: string;
   errorCode?: string;
+  /** 失败说明（脱敏后） */
+  errorMessage?: string;
   /** 离线/历史来源须写明快照 id，便于核对"这份数据是哪个快照" */
   snapshotId?: string;
+  /** 数据获取阶段（R13）：菜单 / 营养 / 套餐详情 */
+  stage?: 'menu' | 'nutrition' | 'combo-detail';
+  /** 本地关联号：同一条数据的多次调用可据此关联（R13） */
+  requestId?: string;
 }
 
 /** 分析后的菜单项 */
@@ -144,8 +151,14 @@ export interface DataSourceContext {
   snapshotId?: string;
 }
 
-/** 由来源上下文生成**如实**的工具轨迹（live 才 ok:true） */
-function sourceReceipts(
+/**
+ * 由来源上下文生成**兜底**的工具轨迹（live 才 ok:true）。
+ *
+ * ⚠️ R13：这只是**没有真实收据时**的退路。正常路径应由取数方在实际调用点产生收据
+ * （`options.sourceReceipts`），或由 `analyzeMenu` 在**调用套餐详情处**按实际结果产生。
+ * **不得**用「live 上下文」去推断一次具体调用成功。
+ */
+function synthReceipts(
   tools: readonly ('query-meals' | 'query-meal-detail' | 'list-nutrition-foods')[],
   source: DataSourceContext | undefined,
   argsSummary = 'storeCode=<已脱敏>',
@@ -174,12 +187,14 @@ function sourceReceipts(
  * @param variant 用户**显式指定**的份量或口味（计划书 §5.3.3 的 `variant` 维度）。
  *   指定后匹配器会走 `variant` 优先级；不指定则遇到歧义时**列候选请用户选**。
  * @param source 取数来源（缺省则不留执行轨迹——**不留 ≠ 谎报成功**）
+ * @param receipts 取数方在**实际调用点**产生的收据（优先使用；缺省才退回按来源兜底合成）
  */
 export function analyzeSingle(
   item: MenuItem,
   matcher: NutritionMatcher,
   variant?: string,
   source?: DataSourceContext,
+  receipts?: DataSourceReceipt[],
 ): AnalyzedItem {
   const m = matcher.match({ code: item.code, name: item.name, ...(variant ? { variant } : {}) });
   const notes = [...m.notes];
@@ -200,7 +215,7 @@ export function analyzeSingle(
     }
   }
 
-  const trace = sourceReceipts(['query-meals'], source);
+  const trace = receipts ?? synthReceipts(['query-meals'], source);
   return {
     code: item.code,
     name: item.name,
@@ -228,6 +243,7 @@ export function analyzeCombo(
   matcher: NutritionMatcher,
   substitutions: readonly SubstitutionRequest[] = [],
   source?: DataSourceContext,
+  receipts?: DataSourceReceipt[],
 ): AnalyzedItem {
   const d = decomposeMeal(detail, matcher, substitutions);
   const evidence: NutritionEvidence[] = [
@@ -256,7 +272,7 @@ export function analyzeCombo(
     quantity: c.quantity,
   }));
 
-  const trace = sourceReceipts(['query-meals', 'query-meal-detail'], source);
+  const trace = receipts ?? synthReceipts(['query-meals', 'query-meal-detail'], source);
 
   // 逐个组件做 kJ/kcal 换算校验——任一组件的记录不可信，整份合计就不可信
   const dataAnomalies: string[] = [];
@@ -329,10 +345,15 @@ export interface AnalyzeMenuOptions {
    */
   variants?: Record<string, string>;
   /**
-   * 取数来源（评审 R7）：传入后，每条结果都会带上**如实的**工具轨迹。
+   * 取数来源（评审 R7）：传入后，本条结果会带上**如实的**工具轨迹。
    * 不传则不留轨迹——**不留轨迹好过臆造一条成功的调用**。
    */
   source?: DataSourceContext;
+  /**
+   * 取数方在**实际调用点**产生的收据（菜单 / 营养表等）——R13 要求收据来自真实调用处。
+   * 传入后作为每条结果的轨迹基底；**缺省才**退回按 `source` 兜底合成。
+   */
+  sourceReceipts?: DataSourceReceipt[];
 }
 
 /**
@@ -349,6 +370,40 @@ export async function analyzeMenu(
 ): Promise<MenuAnalysis> {
   const { concurrency = 4, limit, dedupe = true, onProgress, variants, source } = options;
   const variantOf = (code: string): string | undefined => variants?.[code];
+
+  // 轨迹基底：优先用取数方在真实调用点产生的收据；缺省才按来源兜底合成（R13）
+  const baseReceipts =
+    options.sourceReceipts ?? synthReceipts(['query-meals'], source) ?? [];
+  let detailSeq = 0;
+
+  /** 在**套餐详情的实际调用点**产生收据：成功 / 空详情 / 失败都可区分（R13） */
+  const detailReceipt = (
+    code: string,
+    ok: boolean,
+    errorCode?: string,
+    errorMessage?: string,
+  ): DataSourceReceipt => {
+    const channel = source?.channel ?? 'live';
+    // 离线/历史来源**不是真实调用**——即使成功展开，也不得记成 ok:true（R7/R13）
+    const live = channel === 'live';
+    const effectiveOk = ok && live;
+    return {
+      tool: 'query-meal-detail',
+      channel,
+      ok: effectiveOk,
+      at: new Date().toISOString(),
+      argsSummary: `code=${code}（storeCode=<已脱敏>）`,
+      stage: 'combo-detail' as const,
+      requestId: `${code}#${++detailSeq}`,
+      ...(effectiveOk
+        ? {}
+        : { errorCode: errorCode ?? (live ? 'DETAIL_LOAD_FAILED' : 'OFFLINE_FIXTURE') }),
+      ...(errorMessage === undefined ? {} : { errorMessage }),
+      ...(source?.snapshotId === undefined ? {} : { snapshotId: source.snapshotId }),
+    };
+  };
+  const traceOf = (extra?: DataSourceReceipt): DataSourceReceipt[] =>
+    extra ? [...baseReceipts, extra] : [...baseReceipts];
 
   let list = [...items];
   if (dedupe) {
@@ -371,24 +426,40 @@ export async function analyzeMenu(
         try {
           const detail = await loadDetail(item.code);
           if (detail && detail.rounds.length > 0) {
-            results[idx] = analyzeCombo(item, detail, matcher, [], source);
+            // 成功展开：写入**成功**收据（含实际商品码与关联号）
+            const receipt = detailReceipt(item.code, true);
+            results[idx] = analyzeCombo(item, detail, matcher, [], source, traceOf(receipt));
             onProgress?.(++done, list.length);
             continue;
           }
-          // 展开不了 → 降级为单品直配
-          results[idx] = analyzeSingle(item, matcher, variantOf(item.code), source);
+          // 空详情：可区分的状态，不是"成功"
+          const receipt = detailReceipt(
+            item.code,
+            false,
+            'EMPTY_DETAIL',
+            '套餐详情为空或无可展开轮次',
+          );
+          results[idx] = analyzeSingle(item, matcher, variantOf(item.code), source, traceOf(receipt));
           results[idx]!.notes.push('套餐详情不可用，已降级为「直接匹配」——结果可能不完整');
         } catch (e) {
-          results[idx] = analyzeSingle(item, matcher, variantOf(item.code), source);
+          // 抛错：写入**失败**收据（此前这里只写 notes，轨迹里没有真实失败记录——R13）
+          const err = e as { code?: string; message?: string };
+          const receipt = detailReceipt(
+            item.code,
+            false,
+            err.code ?? 'DETAIL_LOAD_FAILED',
+            err.message ?? String(e),
+          );
+          results[idx] = analyzeSingle(item, matcher, variantOf(item.code), source, traceOf(receipt));
           results[idx]!.notes.push(
-            `套餐详情获取失败（${e instanceof Error ? e.message : String(e)}），已降级为直接匹配`,
+            `套餐详情获取失败（${err.message ?? String(e)}），已降级为直接匹配`,
           );
         }
         onProgress?.(++done, list.length);
         continue;
       }
 
-      results[idx] = analyzeSingle(item, matcher, variantOf(item.code), source);
+      results[idx] = analyzeSingle(item, matcher, variantOf(item.code), source, traceOf());
       onProgress?.(++done, list.length);
     }
   };
