@@ -238,12 +238,13 @@ export function assignConfidence(
   if (!hasAnyKeyNutrient(nutrition)) return 'D';
   if (!isNutritionComplete(nutrition)) return 'C'; // 部分缺失：只展示已知部分
 
-  // ① 有官方组成信息（组件级使用）⇒ 最高档，保留旧行为
+  // ① **含推断成分 ⇒ 最高只到 B**（不论是否有组成）——与旧实现的「risky 把 A 压成 B」等价
+  if (risky) return 'B';
+  // ② 有官方组成信息（组件级使用）⇒ A（保留旧行为）
   if (hasComposition) return 'A';
-  // ② 官方单品**精确直配且无推断** ⇒ A（v3.6 新增：此前该档对单品不可达）
-  //    「精确」＝按官方 code 映射（`code-mapping`）或按名称精确命中（`exact-name`）
-  if ((method === 'code-mapping' || method === 'exact-name') && !risky) return 'A';
-  // ③ 其余（别名/变体/份量匹配、或含推断）⇒ 可追溯但需标注
+  // ③ 官方单品**精确直配**（`code-mapping` / `exact-name`）⇒ A（v3.6 新增：此前该档对单品不可达）
+  if (method === 'code-mapping' || method === 'exact-name') return 'A';
+  // ④ 其余（别名/变体/份量匹配）⇒ 可追溯但需标注
   return 'B';
 }
 
@@ -359,7 +360,16 @@ export class NutritionMatcher {
       .map(([key, names]) => ({ key, names }));
   }
 
-  /** 匹配单个菜单项（可显式指定份量 variant） */
+  /**
+   * 匹配单个菜单项（可显式指定份量 variant）。
+   *
+   * ⚠️ **口径边界（v3.6.1 · 复评 P2）**：本方法与 `matchAll()` / `summarize()` 只回答
+   * 「**名称 ↔ 营养表**」这一层，**不含套餐展开**——套餐类菜单项在此恒为 `unmatched`（D）。
+   * 若需要「**含套餐展开**的整体可信度分布」，请用 `analyzeMenu().summary`。
+   *
+   * 两者的**单品子集口径一致**：同一单品、同一输入，`match()` 与 `analyzeSingle()` 给出同一 A/B
+   * （`tests/v361-api-consistency.test.ts` 有断言）。
+   */
   match(menuItem: MenuItemKey, hasComposition = false): MatchResult {
     const notes: string[] = [];
     const base = {
@@ -380,7 +390,7 @@ export class NutritionMatcher {
           nutritionName: row.productName,
           nutrition: row,
           method: 'code-mapping',
-          confidence: assignConfidence(row, hasComposition),
+          confidence: assignConfidence(row, { hasComposition, method: 'code-mapping', risky: false }),
         };
       }
       notes.push(`代码映射指向「${mappedName}」，但营养表中未找到该品名，降级继续匹配`);
@@ -401,7 +411,7 @@ export class NutritionMatcher {
             nutritionName: row.productName,
             nutrition: row,
             method: 'variant',
-            confidence: assignConfidence(row, hasComposition),
+            confidence: assignConfidence(row, { hasComposition, method: 'variant', risky: false }),
           };
         }
       }
@@ -417,7 +427,7 @@ export class NutritionMatcher {
         nutritionName: exact.productName,
         nutrition: exact,
         method: 'exact-name',
-        confidence: assignConfidence(exact, hasComposition),
+        confidence: assignConfidence(exact, { hasComposition, method: 'exact-name', risky: false }),
       };
     }
 
@@ -431,10 +441,14 @@ export class NutritionMatcher {
         } else {
           notes.push(`别名命中：${menuItem.name} → ${rule.nutrition}（${rule.note}）`);
         }
-        const base0 = assignConfidence(row, hasComposition);
-        // 含推断成分的映射，可信度上限压到 B——诚实标注「此处有推断」
-        const confidence: Confidence = rule.risky && base0 === 'A' ? 'B' : base0;
-        if (rule.risky && base0 === 'A') notes.push('可信度由 A 降为 B（因含推断成分）');
+        // v3.6.1：把 `risky` 交给判据内部处理（含推断者**最高只到 B**），不再在外层手工降级——
+        // 使 `match()` 与 `analyzeSingle()` 对同一输入得到**同一口径**的 A/B。
+        const confidence = assignConfidence(row, {
+          hasComposition,
+          method: 'alias',
+          risky: rule.risky ?? false,
+        });
+        if (rule.risky) notes.push('可信度上限为 B（因含推断成分）');
         return {
           ...base,
           nutritionName: row.productName,
@@ -460,7 +474,7 @@ export class NutritionMatcher {
             nutritionName: row.productName,
             nutrition: row,
             method: 'variant',
-            confidence: assignConfidence(row, hasComposition),
+            confidence: assignConfidence(row, { hasComposition, method: 'variant', risky: false }),
           };
         }
       }
@@ -516,6 +530,12 @@ export class NutritionMatcher {
   }
 
   /** 批量匹配并统计 */
+  /**
+   * 批量匹配并汇总。
+   *
+   * ⚠️ 与 `match()` 同口径（**不含套餐展开**）：套餐类项目计为未命中。
+   * 需要含展开的整体分布时请用 `analyzeMenu().summary`；两者**单品子集**结果一致。
+   */
   matchAll(
     menuItems: readonly MenuItemKey[],
     hasCompositionOf: (code: string) => boolean = () => false,

@@ -234,3 +234,17 @@ npm test                                          # 187 个用例
 - **影响面**：快照内可信度分布由「A 0 / B 55 / C 8 / D 52」变为「**A 21 / B 15 / C 2 / D 83**」
   （A 级全部为单品）；套餐（组合求和）仍为 B；含推断者仍为 B。
 - **回归**：新增 `tests/v36-a-level.test.ts`（6 条，含可达性与「A 级全为单品」断言）；总计 **312 用例**。
+
+### v3.6.1 追加（2026-10-12 · 匹配器 API 口径统一）
+
+- **问题（复评 P2）**：v3.6 只改了 `analyzeSingle()` 的调用，**匹配器内部 5 处仍走旧式判据** ⇒
+  同一精确单品「巨无霸」出现 `match()=B` 而 `analyzeSingle()=A` 的**对外口径分裂**（导出接口不一致）。
+- **修改**：`match()` 的四个分支（`code-mapping` / `variant` / `exact-name` / `alias`）**全部传入**
+  `{ hasComposition, method, risky }`；`risky` 一并交由判据内部处理（含推断者**最高只到 B**），
+  删除外层手工降级——使 `match()` 与 `analyzeSingle()` **同口径**。
+- **职责边界（明确写入接口 JSDoc）**：
+  · `match()` / `matchAll()` / `summarize()` ＝ 只答「**名称 ↔ 营养表**」，**不含套餐展开**（套餐恒为 unmatched/D）；
+  · `analyzeMenu().summary` ＝ **含套餐展开**的整体分布（套餐可进 B/C）。
+  两者在**整体**上本就不同；**单品子集**上必须逐档相等。
+- **回归**：新增 `tests/v361-api-consistency.test.ts`（4 条：单品同值 / stats 与 summarize 一致 /
+  职责边界差异已文档化 / 单品子集分布相等）；总计 **316 用例**。
