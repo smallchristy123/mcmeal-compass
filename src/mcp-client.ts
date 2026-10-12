@@ -19,7 +19,7 @@
  *   3. **401 不重试**——凭据问题重试一万次也没用，只应提示用户去检查配置。
  */
 
-import { unwrapMcpData } from './toon.ts';
+import { unwrapMcpEnvelope, ToonParseError } from './toon.ts';
 import {
   QueryMealsDataSchema,
   toMenuItems,
@@ -151,6 +151,10 @@ export class McpClient {
   private initialized = false;
   /** legacy 时代由服务端下发的会话 id；modern 时代恒为 null */
   private sessionId: string | null = null;
+  /** 握手时服务端声明的协议版本（若有） */
+  private serverProtocolVersion: string | undefined;
+  /** 版本协商结论（如实记录，便于回执与自检） */
+  private protocolNegotiation: 'agreed' | 'server-different' | 'not-returned' = 'not-returned';
 
   constructor(options: McpClientOptions) {
     if (!options.url) throw new McpError('BAD_RESPONSE', 'MCP 服务地址为空');
@@ -169,9 +173,21 @@ export class McpClient {
     this.clientVersion = options.clientVersion ?? '0.1.0';
   }
 
-  /** 当前协议口径（供自检与文档引用） */
-  describeProtocol(): { protocolVersion: string; era: ProtocolEra; session: boolean } {
-    return { protocolVersion: this.protocolVersion, era: this.era, session: this.sessionId !== null };
+  /** 当前协议口径（供自检与文档引用）——**含版本协商结论**，不留模糊表述 */
+  describeProtocol(): {
+    protocolVersion: string;
+    era: ProtocolEra;
+    session: boolean;
+    serverProtocolVersion?: string;
+    protocolNegotiation: 'agreed' | 'server-different' | 'not-returned';
+  } {
+    return {
+      protocolVersion: this.protocolVersion,
+      era: this.era,
+      session: this.sessionId !== null,
+      ...(this.serverProtocolVersion === undefined ? {} : { serverProtocolVersion: this.serverProtocolVersion }),
+      protocolNegotiation: this.protocolNegotiation,
+    };
   }
 
   /** 把任意错误转成 McpError，并**保证信息里没有 Token** */
@@ -375,9 +391,18 @@ export class McpClient {
   }
 
   /** 握手（legacy）/ 能力探测（modern）；同实例只做一次 */
-  async initialize(): Promise<{ serverName?: string; version?: string; era: ProtocolEra; protocolVersion: string }> {
+  async initialize(): Promise<{
+    serverName?: string;
+    version?: string;
+    era: ProtocolEra;
+    protocolVersion: string;
+    /** 服务端在 `initialize` 结果里回的协议版本（未回则缺省） */
+    serverProtocolVersion?: string;
+    /** 版本协商结论：一致 / 服务端给了不同版本 / 服务端未回版本 */
+    protocolNegotiation: 'agreed' | 'server-different' | 'not-returned';
+  }> {
     if (this.initialized) {
-      return { era: this.era, protocolVersion: this.protocolVersion };
+      return { era: this.era, protocolVersion: this.protocolVersion, protocolNegotiation: this.protocolNegotiation };
     }
 
     if (this.era === 'modern') {
@@ -394,14 +419,34 @@ export class McpClient {
         /* discover 是可选优化；不支持就直接发业务请求 */
       }
       this.initialized = true;
-      return { ...(serverName === undefined ? {} : { serverName }), ...(version === undefined ? {} : { version }), era: this.era, protocolVersion: this.protocolVersion };
+      this.protocolNegotiation = 'not-returned';
+      return { ...(serverName === undefined ? {} : { serverName }), ...(version === undefined ? {} : { version }), era: this.era, protocolVersion: this.protocolVersion, protocolNegotiation: this.protocolNegotiation };
     }
 
     const result = (await this.rpc('initialize', {
       protocolVersion: this.protocolVersion,
       capabilities: {},
       clientInfo: { name: this.clientName, version: this.clientVersion },
-    })) as { serverInfo?: { name?: string; version?: string } } | undefined;
+    })) as
+      | { serverInfo?: { name?: string; version?: string }; protocolVersion?: string }
+      | undefined;
+
+    // ── 版本协商（v3 整改）──
+    // 此前 legacy 握手**从不检查**服务端回的 protocolVersion，回执却写着「版本协商」。
+    // 现在三态如实记录：一致 / 服务端给了不同版本（记录下来，不静默改口径）/ 未回版本。
+    // 「不支持」这一态由 rpcOnce 的 -32022 分支负责（UNSUPPORTED_PROTOCOL_VERSION）。
+    const serverProtocolVersion =
+      typeof result?.protocolVersion === 'string' && result.protocolVersion.trim() !== ''
+        ? result.protocolVersion
+        : undefined;
+    this.protocolNegotiation =
+      serverProtocolVersion === undefined
+        ? 'not-returned'
+        : serverProtocolVersion === this.protocolVersion
+          ? 'agreed'
+          : 'server-different';
+    this.serverProtocolVersion = serverProtocolVersion;
+
     // legacy 契约：握手后须发 notifications/initialized（服务端可能强制要求）
     await this.notify('notifications/initialized');
     this.initialized = true;
@@ -410,21 +455,53 @@ export class McpClient {
       version: result?.serverInfo?.version,
       era: this.era,
       protocolVersion: this.protocolVersion,
+      ...(serverProtocolVersion === undefined ? {} : { serverProtocolVersion }),
+      protocolNegotiation: this.protocolNegotiation,
     };
   }
 
-  /** 调用工具，返回**已拆包的业务 data** */
-  async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+  /** 调用工具并返回**原始工具文本**（供夹具采集：既要原文，也要过同一套错误校验） */
+  async callToolRaw(name: string, args: Record<string, unknown> = {}): Promise<string> {
+    const text = await this.callToolText(name, args);
+    // 业务层校验照样跑：采集时若官方返回业务失败，应当**立刻暴露**，而不是把错误存成夹具
+    unwrapMcpEnvelope(text);
+    return text;
+  }
+
+  /** 取工具文本（含工具级 isError 校验），不做业务层拆包 */
+  private async callToolText(name: string, args: Record<string, unknown>): Promise<string> {
     const result = (await this.rpc('tools/call', { name, arguments: args }, name)) as
-      | { content?: { text?: string }[] }
+      | { content?: { text?: string }[]; isError?: boolean }
       | undefined;
+
+    // ① 工具级失败：JSON-RPC 成功 ≠ 业务成功
+    if (result?.isError === true) {
+      throw new McpError('SERVER_ERROR', `工具 ${name} 返回 isError=true（工具执行失败）`);
+    }
+
     const text = result?.content?.[0]?.text;
     if (typeof text !== 'string') {
       throw new McpError('BAD_RESPONSE', `工具 ${name} 的返回里没有 content[0].text`);
     }
+    return text;
+  }
+
+  /**
+   * 调用工具，返回**已拆包的业务 data**。
+   *
+   * ⚠️ 分层验证（评审 R8）：HTTP 状态 → JSON-RPC 错误 → **工具 `isError`** → **业务 `success`/`code`**
+   * → 价格字段与报价对象核对（后者在 pricing 层）。
+   * 任一层失败都**不得**被当作成功数据——尤其不能让「显式失败」变成「官方已核实 0 元」。
+   */
+  async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+    const text = await this.callToolText(name, args);
     try {
-      return unwrapMcpData(text);
+      // ② 业务级失败：success=false / code>=400 → 抛错，不进业务层
+      return unwrapMcpEnvelope(text).data;
     } catch (e) {
+      if (e instanceof ToonParseError && e.code === 'BUSINESS_FAILURE') {
+        throw new McpError('SERVER_ERROR', `工具 ${name} ${redactToken(e.message, this.token)}`);
+      }
       throw new McpError(
         'BAD_RESPONSE',
         `工具 ${name} 返回无法解析：${redactToken(e instanceof Error ? e.message : String(e), this.token)}`,

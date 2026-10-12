@@ -30,7 +30,7 @@ export interface ToolCallTraceEntry {
   ok: boolean;
   /** 调用耗时（毫秒），若可得 */
   ms?: number;
-  /** 发起时刻（ISO）——由**真实报价收据**提供，不再由解释层拼凑 */
+  /** 发起时刻（ISO）——由**真实收据**提供，不再由解释层拼凑 */
   at?: string;
   /** 失败分类（如 RATE_LIMITED / TIMEOUT） */
   errorCode?: string;
@@ -38,6 +38,12 @@ export interface ToolCallTraceEntry {
   retries?: number;
   /** 成功响应内容的哈希前 12 位（可交叉核对） */
   responseHash?: string;
+  /**
+   * 本条轨迹的**渠道**（评审 R7）：
+   *   live=本次真实调用；offline=离线夹具；history=历史快照；rejected=校验失败。
+   * 有它才能一眼看出「这条 ok:false 是因为离线，而不是因为官方报错」。
+   */
+  channel?: string;
 }
 
 export interface Explanation {
@@ -76,7 +82,12 @@ export function collectEvidence(priced: PricedCandidate): EvidenceRef[] {
   return refs;
 }
 
-/** 把一条数值差写成句子；任一侧缺失则**如实说缺**，不编数字 */
+/**
+ * 把一条数值差写成句子；任一侧缺失则**如实说缺**，不编数字。
+ *
+ * `neutral = true` 时**只报数值、不作优劣判断**（评审 P1-5：
+ * 用户没给热量目标时，不得输出「热量更多，此项更优」）。
+ */
 function diffStatement(
   subject: string,
   metric: string,
@@ -85,6 +96,7 @@ function diffStatement(
   b: number | null,
   higherIsBetter = true,
   decimals = 0,
+  neutral = false,
 ): string {
   if (a === null || b === null) {
     return `${subject}的「${metric}」有一侧数据缺失，**无法比较**（不做估算）`;
@@ -92,17 +104,29 @@ function diffStatement(
   const d = a - b;
   if (d === 0) return `${subject}的「${metric}」与对照**相同**（${a.toFixed(decimals)}${unit}）`;
   const better = higherIsBetter ? d > 0 : d < 0;
+  const verdict = neutral ? '未设该目标，仅报数值、不作优劣判断' : better ? '此项更优' : '此项较差';
   return (
     `${subject}的「${metric}」比对照${d > 0 ? '多' : '少'} ` +
     `${Math.abs(d).toFixed(decimals)}${unit}（${a.toFixed(decimals)}${unit} vs ${b.toFixed(decimals)}${unit}，` +
-    `${better ? '此项更优' : '此项较差'}）`
+    `${verdict}）`
   );
 }
 
+/** 解释口径：没有热量目标 ⇒ 热量对比**必须中性**（评审 P1-5） */
+export interface ExplainOptions {
+  energyTargetKcal?: number | null;
+}
+
 /** 解释单个方案 */
-export function explainPlan(priced: PricedCandidate, baseline?: PricedCandidate): Explanation {
+export function explainPlan(
+  priced: PricedCandidate,
+  baseline?: PricedCandidate,
+  options: ExplainOptions = {},
+): Explanation {
   const it: AnalyzedItem = priced.item;
   const statements: string[] = [];
+  /** 没有热量目标 ⇒ 热量只报数、不评优劣 */
+  const energyNeutral = (options.energyTargetKcal ?? null) === null;
 
   statements.push(
     `本方案为「${it.name}」——${it.kind === 'combo' ? `由 ${it.evidence.length - 1} 个组件组成` : '单品'}` +
@@ -147,7 +171,7 @@ export function explainPlan(priced: PricedCandidate, baseline?: PricedCandidate)
       diffStatement('本方案', '蛋白质', 'g', p.value, baseline.item.totals.protein.value, true, 1),
     );
     statements.push(
-      diffStatement('本方案', '热量', 'kcal', e.value, baseline.item.totals.energyKcal.value, true, 0),
+      diffStatement('本方案', '热量', 'kcal', e.value, baseline.item.totals.energyKcal.value, true, 0, energyNeutral),
     );
     const naA = it.totals.sodium.value;
     const naB = baseline.item.totals.sodium.value;
@@ -167,26 +191,29 @@ export function explainPlan(priced: PricedCandidate, baseline?: PricedCandidate)
 /**
  * 由**真实收据**生成工具轨迹。
  *
- * 此前这里是静态拼装（`query-meals` 恒记 `ok: true`）——外部评审 P0-3 指出：
- * 那样既不能反映真实成败，也不能作审计凭据。现在：
- *   · `calculate-price` 一条一收据（含时刻、状态、失败分类、重试次数、响应哈希）；
- *   · `query-meals` / `query-meal-detail` 由候选自带证据推断（**失败即如实记 false**）。
+ * 此前这里是静态拼装（`query-meals` 恒记 `ok: true`）——外部评审 P0-3 / v3 R7 指出：
+ * 离线读夹具也会被写成一次成功的查询调用，既不能反映真实成败，也不能作审计凭据。现在：
+ *   · 取数轨迹**只引用**取数方留下的 `sourceTrace`（离线即 `ok:false / channel:offline`）；
+ *     **没有收据就不写**——不臆造一条成功的调用；
+ *   · `calculate-price` 一条一收据（含时刻、状态、失败分类、重试次数、响应哈希）。
  */
 export function buildToolCallTrace(priced: PricedCandidate): ToolCallTraceEntry[] {
   const it = priced.item;
-  const trace: ToolCallTraceEntry[] = [
-    // 候选来自菜单 → 菜单查询必已成功；否则不会有这个候选可推荐
-    { tool: 'query-meals', argsSummary: 'storeCode=<已脱敏>', ok: true },
-  ];
-  if (it.kind === 'combo') {
-    const expanded = it.evidence.some((e) => e.kind === 'official-combo-sum');
-    trace.push({
-      tool: 'query-meal-detail',
-      argsSummary: `code=${it.code}`,
-      ok: expanded,
-      ...(expanded ? {} : { errorCode: 'NOT_EXPANDED' }),
-    });
+  const trace: ToolCallTraceEntry[] = [];
+
+  for (const r of it.sourceTrace ?? []) {
+    const entry: ToolCallTraceEntry = {
+      tool: r.tool,
+      argsSummary: r.argsSummary,
+      ok: r.ok,
+      at: r.at,
+      channel: r.channel,
+    };
+    if (r.errorCode !== undefined) entry.errorCode = r.errorCode;
+    else if (!r.ok) entry.errorCode = r.channel === 'offline' ? 'OFFLINE_FIXTURE' : 'NOT_LIVE';
+    trace.push(entry);
   }
+
   const r = priced.receipt;
   if (r) {
     trace.push({
@@ -195,24 +222,32 @@ export function buildToolCallTrace(priced: PricedCandidate): ToolCallTraceEntry[
       ok: r.ok,
       at: r.at,
       ms: r.durationMs,
+      channel: r.channel ?? 'live',
       ...(r.retries === undefined ? {} : { retries: r.retries }),
       ...(r.errorCode === undefined ? {} : { errorCode: r.errorCode }),
       ...(r.responseHash === undefined ? {} : { responseHash: r.responseHash }),
     });
   } else {
-    trace.push({ tool: 'calculate-price', argsSummary: `items=[${it.code}×1]`, ok: false, errorCode: 'NO_RECEIPT' });
+    trace.push({
+      tool: 'calculate-price',
+      argsSummary: `items=[${it.code}×1]`,
+      ok: false,
+      errorCode: 'NO_RECEIPT',
+      channel: 'not-attempted',
+    });
   }
   return trace;
 }
 
-/** 两方案对比（直接用程序算出的差） */
-export function comparePlans(a: PricedCandidate, b: PricedCandidate): string[] {
+/** 两方案对比（直接用程序算出的差；热量在无目标时不判优劣） */
+export function comparePlans(a: PricedCandidate, b: PricedCandidate, options: ExplainOptions = {}): string[] {
+  const energyNeutral = (options.energyTargetKcal ?? null) === null;
   return [
     diffStatement('方案 A', '实付价格', '元',
       a.effectivePrice === null ? null : toYuan(a.effectivePrice),
       b.effectivePrice === null ? null : toYuan(b.effectivePrice), false, 2),
     diffStatement('方案 A', '蛋白质', 'g', a.item.totals.protein.value, b.item.totals.protein.value, true, 1),
-    diffStatement('方案 A', '热量', 'kcal', a.item.totals.energyKcal.value, b.item.totals.energyKcal.value, true, 0),
+    diffStatement('方案 A', '热量', 'kcal', a.item.totals.energyKcal.value, b.item.totals.energyKcal.value, true, 0, energyNeutral),
     diffStatement('方案 A', '钠', 'mg', a.item.totals.sodium.value, b.item.totals.sodium.value, false, 0),
   ];
 }

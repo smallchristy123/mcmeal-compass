@@ -21,7 +21,15 @@ import { parseToon } from './toon.ts';
 import { toNutritionRows, type MenuItem, type MealDetail, type NutritionRow } from './schema.ts';
 import type { Priority } from './constraints.ts';
 import { recommendForMenu, type Recommendation } from './recommend.ts';
-import { buildArgsSummary, hashResponse, type PriceAttempt, type Pricer } from './pricing.ts';
+import {
+  buildArgsSummary,
+  hashResponse,
+  requestOf,
+  basketOf,
+  type PriceAttempt,
+  type Pricer,
+  type PriceRequest,
+} from './pricing.ts';
 import { freshnessOf } from './freshness.ts';
 import { pathToFileURL } from 'node:url';
 
@@ -40,6 +48,8 @@ interface CliOptions {
   /** 给定预算即进入「推荐模式」 */
   budget?: number;
   priority: Priority;
+  /** 候选范围：meal=正餐候选（默认）；all=含单品/加餐 */
+  scope: 'meal' | 'all';
   targetKcal?: number;
   minProtein?: number;
   avoidSugary: boolean;
@@ -54,6 +64,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
     sort: 'kcal',
     json: false,
     priority: 'balance',
+    scope: 'meal',
     avoidSugary: false,
     declaredAllergy: false,
   };
@@ -80,6 +91,11 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case '--priority': {
         const v = next();
         if (v === 'budget' || v === 'protein' || v === 'balance') opts.priority = v;
+        break;
+      }
+      case '--scope': {
+        const v = next();
+        if (v === 'meal' || v === 'all') opts.scope = v;
         break;
       }
       case '--sort': {
@@ -110,13 +126,14 @@ const USAGE = `
   --top <n>          概览展示前 n 条（默认 15）
   --sort kcal|protein|price   概览排序（默认 kcal）
   --budget <元>      预算（给此项即输出三方案）
-  --priority budget|protein|balance   偏好（默认 balance）
-  --target-kcal <n>  本餐热量目标（不填则不参与评分）
-  --min-protein <g>  最低蛋白质
-  --avoid-sugary     避开含糖饮料
+  --priority budget|protein|balance   偏好（默认 balance）——**决定首选是哪个视角**（第 1 张卡）
+  --scope meal|all   候选范围（默认 meal 正餐候选；all=含单品/加餐比较）
+  --target-kcal <n>  本餐热量目标（不填则不参与评分，且不对热量作优劣判断）
+  --min-protein <g>  最低蛋白质（**所有批次统一先验**，价格下降不得绕过）
+  --avoid-sugary     避开含糖饮料（按**实际选中组件**判定；成分无法核实时不宣称满足）
   --variant <名=值>  显式指定份量/口味，可重复；例：--variant 薯条=中 --variant 新地=朱古力
   --declared-allergy 已声明过敏（触发安全闸：不再声称「安全」）
-  --json             输出 JSON
+  --json             输出 JSON（含分数据源新鲜度与执行收据）
 
 ⛔ 本版本**不能下单**：create-order 未接入，下单能力已显式关闭（ORDERING_DISABLED）。
    仓库中的下单闸门（order-guard.ts）保证「未确认绝不执行」，但**不代表现在可以下单**。
@@ -130,6 +147,10 @@ interface Sourced {
   storeCode: string;
   storeName: string;
   capturedAt: string;
+  /** 分数据源的产生时刻（评审 P1-4：菜单/营养/套餐/价格分别记录） */
+  capturedAtByKind: { menu: string; nutrition: string; detail: string; price: string };
+  /** 取数来源（供执行轨迹**如实**标注，评审 R7） */
+  dataOrigin: { channel: 'live' | 'offline'; snapshotId?: string };
   items: MenuItem[];
   nutritionRows: NutritionRow[];
   loadDetail: (code: string) => Promise<MealDetail | null>;
@@ -145,25 +166,35 @@ async function loadFromFixtures(): Promise<Sourced> {
     storeCode: b.storeCode,
     storeName: b.storeName,
     capturedAt: b.capturedAt,
+    capturedAtByKind: {
+      menu: b.datetimes.menu,
+      nutrition: b.datetimes.nutrition,
+      detail: b.datetimes.detail,
+      price: b.datetimes.price,
+    },
+    dataOrigin: { channel: 'offline', snapshotId: b.snapshotId },
     items: b.menuItems,
     nutritionRows: b.nutritionRows,
     loadDetail: fixtureDetailLoader(b),
     // 离线夹具里只有一份计价留档，不足以覆盖所有候选；故**不发起**官方计价，
     // 并如实产出一条"未发起"的收据（而不是假装已核实、更不是静默返回 null）
-    price: async (item) => ({
+    price: async (item, request) => ({
       quote: null,
       receipt: {
         tool: 'calculate-price',
-        argsSummary: buildArgsSummary([{ productCode: item.code, quantity: 1 }]),
+        argsSummary: buildArgsSummary(request?.items ?? basketOf(item)),
         at: new Date().toISOString(),
         ok: false,
         attempt: 0,
         errorCode: 'OFFLINE',
         errorMessage: '离线模式：夹具不含该候选的计价留档，未发起计价',
         durationMs: 0,
+        channel: 'offline',
+        stage: request?.stage ?? 'initial',
+        ...(request ? { requestFingerprint: request.fingerprint } : {}),
       },
     }),
-    modeLabel: '离线夹具（无需 Token）',
+    modeLabel: `离线夹具（无需 Token · 快照 ${b.snapshotId}）`,
   };
 }
 
@@ -218,35 +249,47 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
     }
   };
 
-  // 缓存键必须含**门店 / 取餐方式 / 商品 / 数量 / 时间窗**——
-  // 只按商品码缓存是错的：同一商品在不同门店、不同时间窗的报价可能不同（P0-3）
+  // 缓存键必须含**门店 / 取餐方式 / 商品与数量 / 组成指纹 / 时间窗**——
+  // 只按商品码缓存是错的：同一商品在不同门店、不同时间窗、不同组成的报价可能不同（P0-3 / R4）
   const PRICE_WINDOW_MS = 5 * 60_000;
   const priceCache = new Map<string, PriceAttempt>();
-  const cacheKeyOf = (code: string, qty: number) =>
-    `${storeCode}|${1}|${1}|${code}|${qty}|${Math.floor(Date.now() / PRICE_WINDOW_MS)}`;
+  const cacheKeyOf = (request: PriceRequest) =>
+    `${storeCode}|1|1|${request.fingerprint}|${Math.floor(Date.now() / PRICE_WINDOW_MS)}`;
 
-  const price: Pricer = async (item) => {
-    const list = [{ productCode: item.code, quantity: 1 }];
-    const key = cacheKeyOf(item.code, 1);
-    const hit = priceCache.get(key);
-    if (hit) return hit;
+  const price: Pricer = async (item, request) => {
+    const req: PriceRequest = request ?? requestOf(item, 'initial');
+    const key = cacheKeyOf(req);
+    // 最终复核**强制绕过缓存**（复核的意义就是"当下再问一次"）；
+    // 普通确认可命中缓存，命中时如实标 channel=cache，不虚报为一次新请求。
+    const bypassCache = req.stage === 'final';
+    const hit = bypassCache ? undefined : priceCache.get(key);
+    if (hit) return { ...hit, receipt: { ...hit.receipt, channel: 'cache' } };
 
     const started = Date.now();
     const base = {
       tool: 'calculate-price' as const,
-      argsSummary: buildArgsSummary(list),
+      argsSummary: buildArgsSummary(req.items),
       at: new Date().toISOString(),
+      stage: req.stage,
+      requestFingerprint: req.fingerprint,
     };
     try {
       const p = await client.calculatePrice({
         storeCode: storeCode!,
         orderType: 1,
         beType: 1,
-        items: list,
+        items: req.items.map((l) => ({ productCode: l.productCode, quantity: l.quantity })),
       });
       const attempt: PriceAttempt = {
         quote: p,
-        receipt: { ...base, ok: true, attempt: 1, responseHash: hashResponse(p), durationMs: Date.now() - started },
+        receipt: {
+          ...base,
+          ok: true,
+          attempt: 1,
+          responseHash: hashResponse(p),
+          durationMs: Date.now() - started,
+          channel: 'live',
+        },
       };
       priceCache.set(key, attempt);
       return attempt;
@@ -261,6 +304,7 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
           ...(err.code === undefined ? {} : { errorCode: err.code }),
           errorMessage: err.message ?? String(e),
           durationMs: Date.now() - started,
+          channel: 'live',
         },
       };
       // 失败也**如实缓存**（含失败原因），避免同一时间窗内反复打同一个必败的请求
@@ -269,10 +313,14 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
     }
   };
 
+  const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
   return {
     storeCode,
     storeName,
-    capturedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+    capturedAt: nowIso,
+    // 在线模式的四类数据都产生于本次调用（价格单独用报价收据的时刻）
+    capturedAtByKind: { menu: nowIso, nutrition: nowIso, detail: nowIso, price: nowIso },
+    dataOrigin: { channel: 'live' },
     items,
     nutritionRows,
     loadDetail,
@@ -476,7 +524,10 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
       L.push('⛔ 本结果基于**历史样例数据**，不代表当前可售，价格亦未经实时核价。');
     }
   }
-  L.push(`预算    ¥${(opts.budget ?? 0).toFixed(2)}　·　偏好 ${PR_LABEL[opts.priority]}`);
+  L.push(
+    `预算    ¥${(opts.budget ?? 0).toFixed(2)}　·　偏好 ${PR_LABEL[opts.priority]}　·　` +
+      `范围 ${opts.scope === 'all' ? '单品/加餐比较' : '正餐候选'}`,
+  );
   const extras: string[] = [];
   if (opts.minProtein !== undefined) extras.push(`最低蛋白 ${opts.minProtein}g`);
   if (opts.targetKcal !== undefined) extras.push(`热量目标 ${opts.targetKcal} kcal`);
@@ -503,7 +554,7 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
     rec.plans.forEach((p, i) => {
       const it = p.priced.item;
       const t = it.totals;
-      L.push(`【方案 ${i + 1} · ${p.label}】`);
+      L.push(`【方案 ${i + 1} · ${p.label}${i === 0 ? '（首选）' : ''}】`);
       L.push(`  名称    ${it.name}（${it.kind === 'combo' ? `套餐·${it.evidence.length - 1} 项组成` : '单品'}）`);
       L.push(
         `  实付    ${p.priced.effectivePrice === null ? '—' : formatCents(p.priced.effectivePrice)}` +
@@ -536,6 +587,8 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
     L.push(`【说明】${rec.shortfallNote}`);
     L.push('');
   }
+  L.push(`【偏好如何生效】${rec.primaryNote}`);
+  L.push('');
   if (rec.notes.length > 0) {
     L.push('【推导过程】');
     for (const n of rec.notes) L.push(`  · ${n}`);
@@ -549,6 +602,24 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
   L.push('  · ⛔ 本版本**不能下单**：create-order 未接入，下单已显式关闭（ORDERING_DISABLED）。');
   L.push(line);
   return L.join('\n');
+}
+
+/** 分数据源的新鲜度（评审 P1-4：文本要给，**JSON 也要给**） */
+export function freshnessReport(src: Sourced): {
+  generatedAt: string;
+  capturedAt: Record<string, string>;
+  sources: Record<string, ReturnType<typeof freshnessOf>>;
+} {
+  return {
+    generatedAt: new Date().toISOString(),
+    capturedAt: { ...src.capturedAtByKind },
+    sources: {
+      menu: freshnessOf(src.capturedAtByKind.menu, 'menu'),
+      nutrition: freshnessOf(src.capturedAtByKind.nutrition, 'nutrition'),
+      'combo-detail': freshnessOf(src.capturedAtByKind.detail, 'combo-detail'),
+      price: freshnessOf(src.capturedAtByKind.price, 'price'),
+    },
+  };
 }
 
 /**
@@ -572,9 +643,17 @@ export async function runAnalysis(
 
   const { items, summary } = await analyzeMenu(src.items, matcher, src.loadDetail, {
     concurrency: 6,
+    // 取数来源如实下传：离线即 offline（解释层的工具轨迹据此标注，评审 R7）
+    source: {
+      channel: src.dataOrigin.channel,
+      at: new Date().toISOString(),
+      ...(src.dataOrigin.snapshotId === undefined ? {} : { snapshotId: src.dataOrigin.snapshotId }),
+    },
     ...(onProgress ? { onProgress } : {}),
     ...(Object.keys(variantsByCode).length > 0 ? { variants: variantsByCode } : {}),
   });
+
+  const freshness = freshnessReport(src);
 
   // 推荐模式
   if (opts.budget !== undefined) {
@@ -589,6 +668,7 @@ export async function runAnalysis(
           avoidSugaryDrinks: opts.avoidSugary,
           energyTargetKcal: opts.targetKcal ?? null,
           minimumProteinGrams: opts.minProtein ?? null,
+          mealScope: opts.scope === 'all' ? 'all' : 'main-meal',
         },
         safety: { allergyDeclared: opts.declaredAllergy },
       },
@@ -600,9 +680,11 @@ export async function runAnalysis(
           store: { code: src.storeCode, name: src.storeName },
           capturedAt: src.capturedAt,
           mode: src.modeLabel,
+          freshness,
           request: {
             budgetCny: opts.budget,
             priority: opts.priority,
+            scope: opts.scope,
             energyTargetKcal: opts.targetKcal ?? null,
             minimumProteinGrams: opts.minProtein ?? null,
             avoidSugaryDrinks: opts.avoidSugary,
@@ -623,6 +705,7 @@ export async function runAnalysis(
         store: { code: src.storeCode, name: src.storeName },
         capturedAt: src.capturedAt,
         mode: src.modeLabel,
+        freshness,
         summary,
         items,
       },
@@ -642,6 +725,7 @@ export async function runOfflineForTest(args: Partial<CliOptions> = {}): Promise
     sort: 'kcal',
     json: false,
     priority: 'balance',
+    scope: 'meal',
     avoidSugary: false,
     declaredAllergy: false,
     ...args,

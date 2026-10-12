@@ -34,8 +34,21 @@ export interface FixtureBundle {
   /** 采集自哪家门店 */
   storeCode: string;
   storeName: string;
-  /** 采集时刻（来自响应里的 datetime） */
+  /** 采集时刻（**菜单**的产生时刻；各数据的时间分别见 `datetimes`） */
   capturedAt: string;
+  /**
+   * **分数据源**的产生时刻（评审 P1-4：菜单/营养/套餐/价格须分别记录，
+   * 不能用一个时间戳代表全部）。
+   */
+  datetimes: {
+    menu: string;
+    nutrition: string;
+    store: string;
+    /** 套餐详情（取锚点那份的 datetime） */
+    detail: string;
+    /** 官方计价留档 */
+    price: string;
+  };
   nutritionRows: NutritionRow[];
   menuItems: MenuItem[];
   /** code → 套餐详情 */
@@ -62,14 +75,32 @@ async function readJson<T>(p: string): Promise<T> {
   return JSON.parse(await readFile(p, 'utf-8')) as T;
 }
 
+/** 从工具返回文本里取噪声最小的 `datetime`（取不到则空串） */
+function datetimeOf(toolText: string): string {
+  try {
+    const env = extractOriginalResponse(toolText) as { datetime?: unknown } | null;
+    return typeof env?.datetime === 'string' ? env.datetime : '';
+  } catch {
+    return '';
+  }
+}
+
+async function readTextIfExists(p: string): Promise<string> {
+  try {
+    return await readFile(p, 'utf-8');
+  } catch {
+    return '';
+  }
+}
+
 export async function loadFixtures(dir: string = DEFAULT_FIXTURE_DIR): Promise<FixtureBundle> {
   // 营养表
   const nutRaw = await readJson<{ result: { content: { text: string }[] } }>(
     join(dir, 'list-nutrition-foods.raw.json'),
   );
-  const nutEnv = extractOriginalResponse(nutRaw.result.content[0]!.text) as { data: string; datetime?: string };
+  const nutText = nutRaw.result.content[0]!.text;
+  const nutEnv = extractOriginalResponse(nutText) as { data: string; datetime?: string };
   const { rows: nutritionRows } = toNutritionRows(parseToon(nutEnv.data));
-  const capturedAt = nutEnv.datetime ?? '';
 
   // 菜单
   const menuText = await readFile(join(dir, 'query-meals.raw.txt'), 'utf-8');
@@ -79,10 +110,10 @@ export async function loadFixtures(dir: string = DEFAULT_FIXTURE_DIR): Promise<F
   // 门店（query-nearby-stores 的 data 直接是数组；取第一家作展示）
   let storeCode = '';
   let storeName = '（离线夹具 · 门店未知）';
+  let storeDatetime = '';
+  const storeText = await readTextIfExists(join(dir, 'query-nearby-stores.raw.txt'));
   try {
-    const storePayload = unwrapMcpData(
-      await readFile(join(dir, 'query-nearby-stores.raw.txt'), 'utf-8'),
-    );
+    const storePayload = unwrapMcpData(storeText);
     // 兼容两种形状：直接数组 / { data: [...] }
     const list = Array.isArray(storePayload)
       ? (storePayload as Record<string, unknown>[])
@@ -92,9 +123,14 @@ export async function loadFixtures(dir: string = DEFAULT_FIXTURE_DIR): Promise<F
       storeCode = String(first['storeCode'] ?? '');
       storeName = String(first['storeName'] ?? storeName);
     }
+    storeDatetime = datetimeOf(storeText);
   } catch {
     /* 门店留档缺失不影响主流程 */
   }
+
+  // 套餐详情（锚点那份的 datetime 用于「套餐数据」时效）
+  const detailText = await readTextIfExists(join(dir, 'query-meal-detail.raw.txt'));
+  const priceText = await readTextIfExists(join(dir, 'calculate-price.raw.txt'));
 
   // 套餐详情（可能不存在；不存在时全部走降级）
   const combos = new Map<string, MealDetail>();
@@ -111,7 +147,24 @@ export async function loadFixtures(dir: string = DEFAULT_FIXTURE_DIR): Promise<F
     /* 无 bundle */
   }
 
-  return { snapshotId: dir.split(/[\\/]/).pop() ?? 'unknown', storeCode, storeName, capturedAt, nutritionRows, menuItems, combos };
+  const datetimes = {
+    menu: datetimeOf(menuText),
+    nutrition: nutEnv.datetime ?? '',
+    store: storeDatetime,
+    detail: datetimeOf(detailText),
+    price: datetimeOf(priceText),
+  };
+
+  return {
+    snapshotId: dir.split(/[\\/]/).pop() ?? 'unknown',
+    storeCode,
+    storeName,
+    capturedAt: datetimes.menu || datetimes.nutrition,
+    datetimes,
+    nutritionRows,
+    menuItems,
+    combos,
+  };
 }
 
 /** 用夹具构造一个「详情加载器」，可喂给 analyzeMenu */

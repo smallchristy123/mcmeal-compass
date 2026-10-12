@@ -41,6 +41,21 @@ export interface ScoreBreakdown {
   notes: string[];
 }
 
+/**
+ * 价格取值器——**本轮采用的价**（v3 整改，评审 R5）。
+ *
+ * 病根：v2 的评分、帕累托、性价比句读的是 `item.price`（**菜单价**），
+ * 而预算判断读的是 `effectivePrice`（官方实付）——同一轮推荐里两套价格，
+ * 于是出现「官方价最便宜的那个，价格分反而最低」。
+ *
+ * 修法：把「取哪一个价」显式化为一个解析器，默认取菜单价（向后兼容），
+ * 推荐链路统一传入**已采用的实付价**，保证预算/评分/帕累托/比较句同源。
+ */
+export type PriceResolver = (item: AnalyzedItem) => Cents | null;
+
+/** 默认取值器：菜单价（仅供未接入官方计价的调用方使用） */
+export const menuPriceResolver: PriceResolver = (item) => item.price;
+
 /** 归一化上下文：本轮候选集的取值范围 */
 export interface ScoreContext {
   budgetCents: Cents;
@@ -53,9 +68,13 @@ export interface ScoreContext {
   energyToleranceKcal: number;
 }
 
-/** 从候选集构建归一化上下文 */
-export function buildScoreContext(accepted: readonly AnalyzedItem[], req: MealRequest): ScoreContext {
-  const prices = accepted.map((i) => i.price).filter((p): p is Cents => p !== null);
+/** 从候选集构建归一化上下文（价格口径由 `priceOf` 决定：默认菜单价，推荐链路传实付价） */
+export function buildScoreContext(
+  accepted: readonly AnalyzedItem[],
+  req: MealRequest,
+  priceOf: PriceResolver = menuPriceResolver,
+): ScoreContext {
+  const prices = accepted.map(priceOf).filter((p): p is Cents => p !== null);
   const proteins = accepted
     .map((i) => i.totals.protein.value)
     .filter((p): p is number => p !== null);
@@ -110,14 +129,15 @@ export function effectiveWeights(
   };
 }
 
-/** 对单个候选评分 */
+/** 对单个候选评分（价格口径同 `buildScoreContext`，默认菜单价；推荐链路传**实付价**） */
 export function scoreItem(
   item: AnalyzedItem,
   ctx: ScoreContext,
   priority: Priority,
   base: ScoreWeights = DEFAULT_WEIGHTS[priority],
+  priceOf: PriceResolver = menuPriceResolver,
 ): ScoreBreakdown {
-  const price = item.price;
+  const price = priceOf(item);
   const protein = item.totals.protein.value;
   const kcal = item.totals.energyKcal.value;
   const target = ctx.energyTargetKcal;

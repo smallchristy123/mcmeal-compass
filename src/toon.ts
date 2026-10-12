@@ -42,7 +42,9 @@ export type ToonErrorCode =
   | 'NO_COLUMNS'
   | 'ROW_COUNT_MISMATCH'
   | 'COLUMN_COUNT_MISMATCH'
-  | 'UNTERMINATED_QUOTE';
+  | 'UNTERMINATED_QUOTE'
+  /** 业务层失败（`success=false` 或 `code >= 400`）——**错误响应绝不当作数据**（评审 R8） */
+  | 'BUSINESS_FAILURE';
 
 export class ToonParseError extends Error {
   readonly code: ToonErrorCode;
@@ -285,9 +287,33 @@ function findJsonObjectEnd(text: string, from: number): number {
  * @returns 外层 JSON 的 `data` 字段；若无 `data` 则返回外层对象本身。
  */
 export function unwrapMcpData(toolText: string): unknown {
+  return unwrapMcpEnvelope(toolText).data;
+}
+
+/**
+ * **带业务校验**的拆包（评审 R8）。
+ *
+ * v2 只检查「有没有价格字段」，于是 `{"success":false,"code":500,"data":{"price":0}}`
+ * 这种**显式失败**也被解析成了「官方已核实 ¥0」。
+ * 现在：`success === false` 或 `code >= 400` ⇒ 抛错，绝不流进业务层。
+ *
+ * @throws {ToonParseError} 业务失败（code = BUSINESS_FAILURE）
+ */
+export function unwrapMcpEnvelope(toolText: string): { envelope: unknown; data: unknown } {
   const envelope = extractOriginalResponse(toolText) as Record<string, unknown> | null;
-  if (envelope && typeof envelope === 'object' && 'data' in envelope) {
-    return envelope['data'];
+  if (envelope && typeof envelope === 'object') {
+    const success = envelope['success'];
+    const code = envelope['code'];
+    const message = envelope['message'];
+    const failed =
+      success === false || (typeof code === 'number' && Number.isFinite(code) && code >= 400);
+    if (failed) {
+      throw new ToonParseError(
+        'BUSINESS_FAILURE',
+        `官方返回业务失败（success=${String(success)}，code=${String(code)}）：${String(message ?? '无说明')}`,
+      );
+    }
+    if ('data' in envelope) return { envelope, data: envelope['data'] };
   }
-  return envelope;
+  return { envelope, data: envelope };
 }

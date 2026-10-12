@@ -29,6 +29,39 @@ export const DEFAULT_TTL_MINUTES: Record<DataKind, number> = {
 
 export type FreshnessStatus = 'fresh' | 'stale' | 'unknown';
 
+/** 官方 `datetime` 不带时区（形如 `2026-10-10 20:08:57`）——按东八区解读，并如实标注 */
+export const ASSUMED_TIMEZONE = '+08:00';
+/** 时间戳落在未来的容忍度（分钟）：超过即判为「不可信时效」 */
+export const FUTURE_TOLERANCE_MINUTES = 5;
+
+export interface ParsedCapturedAt {
+  /** 可解析时为毫秒；不可解析为 null */
+  ms: number | null;
+  /** 是否**替它假定**了时区（原文未带时区时） */
+  timezoneAssumed: boolean;
+  /** 规范化后的字符串（补了时区与 T 分隔符） */
+  normalized: string;
+}
+
+/**
+ * 解析数据产生时刻（P1-4 的边界处理）：
+ *   · 原文带时区（`Z` / `+08:00`）→ 照用；
+ *   · 不带（官方 `datetime` 就是如此）→ 按 **+08:00** 解读，并标记 `timezoneAssumed`；
+ *   · **未来时间**不视为"更新鲜"，而是判为不可信（见 `freshnessOf`）。
+ */
+export function parseCapturedAt(capturedAt: string): ParsedCapturedAt {
+  const t = (capturedAt ?? '').trim();
+  if (t === '') return { ms: null, timezoneAssumed: false, normalized: '' };
+  const hasTz = /(?:Z|[+-]\d{2}:?\d{2})$/.test(t);
+  const normalized = hasTz ? t.replace(' ', 'T') : `${t.replace(' ', 'T')}${ASSUMED_TIMEZONE}`;
+  const ms = Date.parse(normalized);
+  return {
+    ms: Number.isFinite(ms) ? ms : null,
+    timezoneAssumed: !hasTz,
+    normalized,
+  };
+}
+
 export interface Freshness {
   kind: DataKind;
   status: FreshnessStatus;
@@ -39,6 +72,10 @@ export interface Freshness {
   ttlMinutes: number;
   /** 可直接展示给用户的一句话 */
   note: string;
+  /** 原文未带时区、由本工具按 +08:00 解读 */
+  timezoneAssumed?: boolean;
+  /** 规范化后的时间串（含时区），便于复核 */
+  rawParsedAs?: string;
 }
 
 export function freshnessOf(
@@ -48,9 +85,13 @@ export function freshnessOf(
 ): Freshness {
   const now = options.now ?? new Date();
   const ttlMinutes = options.ttlMinutes ?? DEFAULT_TTL_MINUTES[kind];
-  const t = Date.parse(capturedAt);
+  const parsed = parseCapturedAt(capturedAt);
+  const tzExtra = {
+    timezoneAssumed: parsed.timezoneAssumed,
+    ...(parsed.normalized === '' ? {} : { rawParsedAs: parsed.normalized }),
+  };
 
-  if (!capturedAt || !Number.isFinite(t)) {
+  if (parsed.ms === null) {
     return {
       kind,
       status: 'unknown',
@@ -58,10 +99,32 @@ export function freshnessOf(
       ageMinutes: null,
       ttlMinutes,
       note: '数据时间戳缺失或不可解析——**不假定其新鲜**，不得按"当前"表述',
+      ...tzExtra,
     };
   }
 
-  const ageMinutes = Math.max(0, Math.round((now.getTime() - t) / 60_000));
+  const rawAge = (now.getTime() - parsed.ms) / 60_000;
+
+  // 未来时间（超出容忍度）：不当成"更新鲜"，而是判为不可信时效
+  if (rawAge < -FUTURE_TOLERANCE_MINUTES) {
+    return {
+      kind,
+      status: 'unknown',
+      capturedAt,
+      ageMinutes: Math.round(rawAge),
+      ttlMinutes,
+      note:
+        `⚠️ 数据时间戳位于**未来**（${capturedAt}，距当前约 ${Math.abs(Math.round(rawAge))} 分钟）——` +
+        '判为**不可信时效**，不得按"当前可售/实时价格"表述',
+      ...tzExtra,
+    };
+  }
+
+  const ageMinutes = Math.max(0, Math.round(rawAge));
+  const tzNote = parsed.timezoneAssumed
+    ? `（原文未带时区，按 ${ASSUMED_TIMEZONE} 解读为 ${parsed.normalized}）`
+    : '';
+
   if (ageMinutes <= ttlMinutes) {
     return {
       kind,
@@ -69,7 +132,8 @@ export function freshnessOf(
       capturedAt,
       ageMinutes,
       ttlMinutes,
-      note: `数据产生于 ${capturedAt}（${ageMinutes} 分钟前，时效 ${ttlMinutes} 分钟内）`,
+      note: `数据产生于 ${capturedAt}（${ageMinutes} 分钟前，时效 ${ttlMinutes} 分钟内）${tzNote}`,
+      ...tzExtra,
     };
   }
 
@@ -81,7 +145,8 @@ export function freshnessOf(
     ttlMinutes,
     note:
       `⚠️ 数据产生于 ${capturedAt}，距今 ${formatAge(ageMinutes)}，**已超时效 ${formatAge(ttlMinutes)}**——` +
-      '只能作**历史样例**，**不代表当前可售，也不是实时价格**',
+      `只能作**历史样例**，**不代表当前可售，也不是实时价格**${tzNote}`,
+    ...tzExtra,
   };
 }
 

@@ -83,21 +83,39 @@ const req = (over: Partial<MealRequest> = {}): MealRequest => ({
   ...over,
 });
 
-const priceResult = (yuan: number, originalYuan = yuan, discountYuan = 0) =>
+/**
+ * 构造一份**能通过报价对象核对**的成功报价（v3 契约）：
+ * 响应的 productList 必须与请求的商品码/数量对得上——否则按「未核实」处理。
+ */
+const priceResult = (
+  yuan: number,
+  originalYuan = yuan,
+  discountYuan = 0,
+  code = 'TEST',
+  qty = 1,
+) =>
   toPriceResult({
     price: Math.round(yuan * 100),
     originalPrice: Math.round(originalYuan * 100),
     discount: Math.round(discountYuan * 100),
-    productList: [],
+    productList: [
+      {
+        productCode: code,
+        productName: `测试商品${code}`,
+        quantity: qty,
+        originalSubtotal: Math.round(originalYuan * 100),
+        subtotal: Math.round(yuan * 100),
+      },
+    ],
     takeWayList: [],
   });
 
 /** 成功报价 + 结构化收据（计价器的新契约：结果与收据一起返回） */
-const okAttempt = (yuan: number, originalYuan = yuan, discountYuan = 0): PriceAttempt => ({
-  quote: priceResult(yuan, originalYuan, discountYuan),
+const okAttempt = (yuan: number, originalYuan = yuan, discountYuan = 0, code = 'TEST'): PriceAttempt => ({
+  quote: priceResult(yuan, originalYuan, discountYuan, code),
   receipt: {
     tool: 'calculate-price',
-    argsSummary: 'items=[TEST×1]',
+    argsSummary: `items=[${code}×1]`,
     at: new Date().toISOString(),
     ok: true,
     attempt: 1,
@@ -279,7 +297,7 @@ describe('T2.3 · 计价闭环与预算约束', () => {
   const budget = cents(3500);
 
   test('官方计价被采纳，且菜单价与实付不一致时如实标注', async () => {
-    const pricer: Pricer = async () => okAttempt(32, 38, 6); // 菜单 35，实付 32
+    const pricer: Pricer = async (it) => okAttempt(32, 38, 6, it.code); // 菜单 35，实付 32
     const r = await confirmPrices([item('A', '堡', 35, { kcal: 500, protein: 25 })], budget, pricer);
     assert.equal(r.within.length, 1);
     const p = r.within[0]!;
@@ -297,7 +315,7 @@ describe('T2.3 · 计价闭环与预算约束', () => {
   });
 
   test('超预算被排除在「预算内」之外', async () => {
-    const pricer: Pricer = async () => okAttempt(40);
+    const pricer: Pricer = async (it) => okAttempt(40, 40, 0, it.code);
     const r = await confirmPrices([item('A', '贵堡', 40, { kcal: 500, protein: 25 })], budget, pricer);
     assert.equal(r.within.length, 0);
     assert.equal(r.nearestOver?.item.code, 'A');
@@ -306,7 +324,7 @@ describe('T2.3 · 计价闭环与预算约束', () => {
   });
 
   test('全部超预算：给出「最接近」的那个', async () => {
-    const pricer: Pricer = async (it) => okAttempt(it.code === 'A' ? 60 : 38);
+    const pricer: Pricer = async (it) => okAttempt(it.code === 'A' ? 60 : 38, it.code === 'A' ? 60 : 38, 0, it.code);
     const r = await confirmPrices(
       [item('A', '很贵堡', 60, { kcal: 500, protein: 25 }), item('B', '小超堡', 38, { kcal: 400, protein: 20 })],
       budget,
@@ -329,7 +347,7 @@ describe('T2.4 · 三方案生成与去重', () => {
       item('MID2', '另一个中间款', 24, { kcal: 480, protein: 24 }),
     ];
 
-  const pricer: Pricer = async (it) => okAttempt((it.price ?? 0) / 100);
+  const pricer: Pricer = async (it) => okAttempt((it.price ?? 0) / 100, (it.price ?? 0) / 100, 0, it.code);
 
   const build = async (items: AnalyzedItem[], r = req()) => {
     const { recommendation } = await recommendForMenu(items, r, pricer);
@@ -419,13 +437,31 @@ describe('T2.5 · 证据驱动的解释', () => {
   });
 
   test('解释含 evidenceIds 与脱敏 toolCallTrace（不含 Token/地址）', () => {
-    const e = explainPlan(mk('A', '甲', 30, 20));
+    const priced = mk('A', '甲', 30, 20);
+    // 取数执行事实由**取数方**留下；解释层只引用（v3：离线不得写成成功调用）
+    priced.item.sourceTrace = [
+      {
+        tool: 'query-meals',
+        channel: 'offline',
+        ok: false,
+        at: '2026-10-12T01:00:00.000Z',
+        argsSummary: 'storeCode=<已脱敏>',
+        errorCode: 'OFFLINE_FIXTURE',
+        snapshotId: 'baseline-20261010-3450024',
+      },
+    ];
+    const e = explainPlan(priced);
     assert.ok(e.evidenceIds.some((id) => id.startsWith('menu:')));
     assert.ok(e.evidenceIds.some((id) => id.startsWith('price:')));
     const trace = JSON.stringify(e.toolCallTrace);
     assert.ok(trace.includes('query-meals'));
     assert.ok(!/Bearer|token|Token/.test(trace), '轨迹不得含凭据');
     assert.ok(trace.includes('已脱敏'), '门店编码应脱敏');
+    assert.equal(
+      e.toolCallTrace.find((t) => t.tool === 'query-meals')?.ok,
+      false,
+      '离线读取不得被写成一次成功的查询调用',
+    );
   });
 
   test('官方计价未取得时，解释如实说明「未核实」', () => {
@@ -441,7 +477,7 @@ describe('T2.3 补充 · 收据 / 0 元报价 / 有界并发 / 止损', () => {
   const budget = cents(3500);
 
   test('⭐ 合法的 0 元报价被采纳（0 元 ≠ 没拿到报价）', async () => {
-    const pricer: Pricer = async () => okAttempt(0);
+    const pricer: Pricer = async (it) => okAttempt(0, 0, 0, it.code);
     const r = await confirmPrices([item('A', '赠品堡', 20, { kcal: 400, protein: 20 })], budget, pricer);
     const p = r.within[0]!;
     assert.equal(p.priceSource, 'official');
@@ -461,7 +497,7 @@ describe('T2.3 补充 · 收据 / 0 元报价 / 有界并发 / 止损', () => {
   });
 
   test('每次报价都产出结构化收据（含失败），并汇总进 outcome.receipts', async () => {
-    const pricer: Pricer = async (it) => (it.code === 'B' ? failAttempt('TIMEOUT') : okAttempt(20));
+    const pricer: Pricer = async (it) => (it.code === 'B' ? failAttempt('TIMEOUT') : okAttempt(20, 20, 0, it.code));
     const r = await confirmPrices(
       [item('A', '甲', 20, { kcal: 400, protein: 20 }), item('B', '乙', 22, { kcal: 400, protein: 20 })],
       budget,
@@ -480,7 +516,7 @@ describe('T2.3 补充 · 收据 / 0 元报价 / 有界并发 / 止损', () => {
     const seen: string[] = [];
     const pricer: Pricer = async (it) => {
       seen.push(it.code);
-      return okAttempt(10);
+      return okAttempt(10, 10, 0, it.code);
     };
     const many = Array.from({ length: 6 }, (_, i) => item(`C${i}`, `候选${i}`, 10, { kcal: 300, protein: 10 }));
     const r = await confirmPrices(many, budget, pricer, { maxRequests: 2, concurrency: 1 });
@@ -507,12 +543,12 @@ describe('T2.3 补充 · 收据 / 0 元报价 / 有界并发 / 止损', () => {
   test('并发上限生效（不会一次打满）', async () => {
     let inFlight = 0;
     let peak = 0;
-    const pricer: Pricer = async () => {
+    const pricer: Pricer = async (it) => {
       inFlight++;
       peak = Math.max(peak, inFlight);
       await new Promise((r) => setTimeout(r, 5));
       inFlight--;
-      return okAttempt(10);
+      return okAttempt(10, 10, 0, it.code);
     };
     const many = Array.from({ length: 9 }, (_, i) => item(`E${i}`, `候选${i}`, 10, { kcal: 300, protein: 10 }));
     await confirmPrices(many, budget, pricer, { concurrency: 3 });
@@ -531,7 +567,7 @@ describe('T2.3 补充 · 收据 / 0 元报价 / 有界并发 / 止损', () => {
       notes: [],
       verified: false,
     };
-    const pricer: Pricer = async () => okAttempt(22);
+    const pricer: Pricer = async (it) => okAttempt(22, 22, 0, it.code);
     const r = await requoteFinal(p, pricer);
     assert.equal(r.price, 2200);
     assert.equal(r.consistent, false);

@@ -25,6 +25,40 @@ import type { AnalyzedItem } from './analyze.ts';
 import type { PriceResult } from './schema.ts';
 import { toYuan, type Cents } from './money.ts';
 
+/** 一条报价行（官方契约：**productCode** + quantity） */
+export interface PriceLine {
+  productCode: string;
+  quantity: number;
+}
+
+/** 报价阶段：初次确认 / 最终复核 */
+export type PriceStage = 'initial' | 'final';
+
+/**
+ * 报价渠道——用于**如实**统计「本次到底发起了几次真实请求」（评审 R6）：
+ *   · `live`          真实 HTTP 请求；
+ *   · `cache`         命中时间窗内缓存（**不新增网络调用**）；
+ *   · `offline`       离线夹具（**不发起任何请求**）；
+ *   · `not-attempted` 因止损/请求预算未发起。
+ */
+export type ReceiptChannel = 'live' | 'cache' | 'offline' | 'not-attempted';
+
+/**
+ * 一次**明确的报价请求**（评审 R4）。
+ *
+ * 之前 `requoteFinal` 只把 `list[0].productCode` 交给计价器，**丢掉其余组件与数量**，
+ * 收据上却写着 `A×1`。现在：完整清单、组成指纹、报价阶段三者一起进入请求、收据与缓存标识。
+ */
+export interface PriceRequest {
+  /** 报价对象（套餐按官方契约**整体报价**，不盲目拆成单品相加） */
+  items: readonly PriceLine[];
+  /** 实际组成（若与 items 不同，例如套餐选了非默认组件）——留痕与指纹用 */
+  composition?: readonly PriceLine[];
+  /** 组成指纹：items + composition 规范化后取哈希；进缓存键与收据 */
+  fingerprint: string;
+  stage: PriceStage;
+}
+
 /** 单次官方报价的**结构化收据**（可作审计凭据，脱敏） */
 export interface PriceReceipt {
   tool: 'calculate-price';
@@ -44,6 +78,12 @@ export interface PriceReceipt {
   /** 成功响应内容的 SHA-256 前 12 位（可用于交叉核对"当时到底返回了什么"） */
   responseHash?: string;
   durationMs: number;
+  /** 渠道（**必须如实**：它决定"离线=0 次真实请求"这句话能不能站住） */
+  channel?: ReceiptChannel;
+  /** 报价阶段 */
+  stage?: PriceStage;
+  /** 组成指纹（与缓存标识一致，可交叉核对"这个价对应哪份组成"） */
+  requestFingerprint?: string;
 }
 
 export interface PricedCandidate {
@@ -73,6 +113,8 @@ export interface PricingOutcome {
   notes: string[];
   /** 全部报价收据（含失败的），供解释层引用与审计 */
   receipts: PriceReceipt[];
+  /** 本次「到底做了什么」的如实统计（离线=0 次真实请求） */
+  summary: RequestSummary;
 }
 
 /** 一次报价的产出：结果 + 收据 */
@@ -81,17 +123,123 @@ export interface PriceAttempt {
   receipt: PriceReceipt;
 }
 
-/** 计价器：给定候选，返回报价结果与收据 */
-export type Pricer = (item: AnalyzedItem) => Promise<PriceAttempt>;
+/** 计价器：给定候选（与可选的完整报价请求），返回报价结果与收据 */
+export type Pricer = (item: AnalyzedItem, request?: PriceRequest) => Promise<PriceAttempt>;
 
 /** 便于测试与调用方构造一个"成功收据" */
-export function buildArgsSummary(items: readonly { productCode: string; quantity: number }[]): string {
+export function buildArgsSummary(items: readonly PriceLine[]): string {
   return `items=[${items.map((i) => `${i.productCode}×${i.quantity}`).join(',')}]`;
 }
 
 export function hashResponse(payload: unknown): string {
   const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
   return createHash('sha256').update(text).digest('hex').slice(0, 12);
+}
+
+/** 规范化清单：剔除数量非正的行，并按商品码排序（保证指纹稳定） */
+export function normalizeLines(lines: readonly PriceLine[]): PriceLine[] {
+  return lines
+    .filter((l) => Number.isFinite(l.quantity) && l.quantity > 0)
+    .slice()
+    .sort((a, b) => a.productCode.localeCompare(b.productCode));
+}
+
+/** 组成指纹：同一份「商品 × 数量 × 组成」必得同一指纹；任一变化即变 */
+export function fingerprintOf(items: readonly PriceLine[], composition?: readonly PriceLine[]): string {
+  return hashResponse({
+    items: normalizeLines(items),
+    composition: composition && composition.length > 0 ? normalizeLines(composition) : null,
+  });
+}
+
+/** 默认报价对象：**按官方契约整体报价**（套餐不拆件），单件即自身 */
+export function basketOf(item: AnalyzedItem): PriceLine[] {
+  return [{ productCode: item.code, quantity: 1 }];
+}
+
+/** 实际组成（来自结构化组件；仅用于指纹与留痕，不用于拆价） */
+export function compositionOf(item: AnalyzedItem): PriceLine[] {
+  return (item.components ?? []).map((c) => ({
+    productCode: c.choiceCode,
+    quantity: c.quantity > 0 ? c.quantity : 1,
+  }));
+}
+
+/**
+ * 构造一次完整报价请求。
+ * @param items 显式给定的报价对象；未给则用候选自身（套餐整体）
+ */
+export function requestOf(
+  item: AnalyzedItem,
+  stage: PriceStage,
+  items?: readonly PriceLine[],
+): PriceRequest {
+  const lines = items && items.length > 0 ? items : basketOf(item);
+  const composition = compositionOf(item);
+  return {
+    items: lines,
+    ...(composition.length > 0 ? { composition } : {}),
+    fingerprint: fingerprintOf(lines, composition),
+    stage,
+  };
+}
+
+/** 报价对象与响应对照的核对结论（评审 R9） */
+export interface BasketVerdict {
+  status: 'matched' | 'empty-response' | 'mismatch';
+  detail: string;
+}
+
+/**
+ * 核对「请求的商品与数量」是否与响应逐项对应。
+ *
+ * 为什么要这一步：v2 只判断「响应里有 price 字段」，于是**空清单 + ¥0**
+ * 被当成「官方已核实 0 元」。合法 0 元（赠品/全额优惠）仍应接受——
+ * 前提是**报价对象核对得上**，而不是凭空清单猜成功。
+ */
+export function verifyQuoteBasket(
+  request: PriceRequest,
+  quote: { productList: readonly { productCode: string; quantity: number }[] },
+): BasketVerdict {
+  const want = normalizeLines(request.items);
+  const got = normalizeLines(quote.productList.map((p) => ({ productCode: p.productCode, quantity: p.quantity })));
+
+  if (want.length === 0) {
+    return { status: 'matched', detail: '请求清单为空（无需对照）' };
+  }
+  if (got.length === 0) {
+    return {
+      status: 'empty-response',
+      detail: `请求 ${want.length} 项，但响应未返回任何商品明细——**无法核对报价对象**`,
+    };
+  }
+  const gotByCode = new Map(got.map((g) => [g.productCode, g.quantity]));
+  const missing = want.filter((w) => !gotByCode.has(w.productCode));
+  const qtyDiff = want
+    .filter((w) => gotByCode.has(w.productCode) && gotByCode.get(w.productCode) !== w.quantity)
+    .map((w) => `${w.productCode}：请求 ×${w.quantity} / 响应 ×${gotByCode.get(w.productCode)}`);
+
+  if (missing.length > 0 || qtyDiff.length > 0) {
+    return {
+      status: 'mismatch',
+      detail:
+        `报价对象与请求不一致——` +
+        [
+          missing.length > 0 ? `缺项：${missing.map((m) => m.productCode).join('、')}` : '',
+          qtyDiff.length > 0 ? `数量不符：${qtyDiff.join('；')}` : '',
+        ]
+          .filter(Boolean)
+          .join('；'),
+    };
+  }
+  const extra = got.filter((g) => !want.some((w) => w.productCode === g.productCode));
+  return {
+    status: 'matched',
+    detail:
+      extra.length > 0
+        ? `报价对象与请求一致（响应另含 ${extra.length} 项，未纳入判定）`
+        : '报价对象与请求一致',
+  };
 }
 
 export interface ConfirmOptions {
@@ -139,12 +287,13 @@ export async function confirmPrices(
   let done = 0;
 
   const work = async (item: AnalyzedItem): Promise<PricedCandidate> => {
+    const request = requestOf(item, 'initial');
     // 请求预算 / 止损：一旦触顶或已限流，不再发起，如实标为"未核实"
     if (state.stopped || state.requests >= maxRequests) {
       const reason = state.stopReason ?? `已达请求预算上限（${maxRequests} 次）`;
       const receipt: PriceReceipt = {
         tool: 'calculate-price',
-        argsSummary: buildArgsSummary([{ productCode: item.code, quantity: 1 }]),
+        argsSummary: buildArgsSummary(request.items),
         at: new Date().toISOString(),
         ok: false,
         attempt: 0,
@@ -152,6 +301,9 @@ export async function confirmPrices(
         errorCode: state.stopped ? 'RATE_LIMITED' : 'BUDGET_EXCEEDED',
         errorMessage: `未发起计价：${reason}`,
         durationMs: 0,
+        channel: 'not-attempted',
+        stage: 'initial',
+        requestFingerprint: request.fingerprint,
       };
       return {
         item,
@@ -169,14 +321,15 @@ export async function confirmPrices(
     state.requests++;
     let attempt: PriceAttempt;
     try {
-      attempt = await pricer(item);
+      // ⚠️ 完整报价请求随行：组件与数量不再丢失（评审 R4）
+      attempt = await pricer(item, request);
     } catch (e) {
       const err = e as { code?: string; message?: string };
       attempt = {
         quote: null,
         receipt: {
           tool: 'calculate-price',
-          argsSummary: buildArgsSummary([{ productCode: item.code, quantity: 1 }]),
+          argsSummary: buildArgsSummary(request.items),
           at: new Date().toISOString(),
           ok: false,
           attempt: 1,
@@ -184,6 +337,9 @@ export async function confirmPrices(
           ...(err.code === undefined ? {} : { errorCode: err.code }),
           errorMessage: err.message ?? String(e),
           durationMs: 0,
+          channel: 'live',
+          stage: 'initial',
+          requestFingerprint: request.fingerprint,
         },
       };
     }
@@ -199,17 +355,33 @@ export async function confirmPrices(
     let priceSource: 'official' | 'menu' = 'menu';
     let verified = false;
 
-    // ⚠️ 只有「官方没给出价格」才降级；合法的 0 元报价照用（0 元 ≠ 没报价）
-    if (attempt.quote && attempt.quote.price !== null) {
-      effectivePrice = attempt.quote.price;
+    // 报价对象核对（评审 R9）：拿不到逐项清单 / 商品或数量不符 ⇒ 不能算"已核实"
+    const verdict = attempt.quote ? verifyQuoteBasket(request, attempt.quote) : null;
+    const pricePresent = Boolean(attempt.quote && attempt.quote.price !== null);
+    const basketOk = verdict?.status === 'matched';
+
+    // ⚠️ 只有「官方给出价格 **且** 报价对象核对得上」才采纳为官方价；
+    //    合法的 0 元报价照用（0 元 ≠ 没报价），但同样要过核对这一关。
+    if (pricePresent && basketOk) {
+      effectivePrice = attempt.quote!.price as Cents;
       priceSource = 'official';
       verified = true;
-      if (attempt.quote.price === 0) {
+      if (effectivePrice === 0) {
         itemNotes.push('官方报价为 ¥0.00（可能为赠品或全额优惠）——按官方价采用，**不是**「没拿到报价」');
-      } else if (item.price !== null && item.price !== attempt.quote.price) {
+      } else if (item.price !== null && item.price !== effectivePrice) {
         itemNotes.push(
-          `菜单价 ¥${toYuan(item.price).toFixed(2)} 与官方实付 ¥${toYuan(attempt.quote.price).toFixed(2)} 不同（含优惠/费用）`,
+          `菜单价 ¥${toYuan(item.price).toFixed(2)} 与官方实付 ¥${toYuan(effectivePrice).toFixed(2)} 不同（含优惠/费用）`,
         );
+      }
+      if (verdict && verdict.detail.includes('另含')) itemNotes.push(`报价对象核对：${verdict.detail}`);
+    } else if (pricePresent) {
+      // 有价格字段，但报价对象核对不上 → **拒绝采纳**，不得据此说"已核实"
+      itemNotes.push(
+        `官方响应**未通过报价对象核对**（${verdict?.detail ?? '无明细'}）：不采纳该金额，标记为「未核实实付」`,
+      );
+      if (fallback && item.price !== null) {
+        effectivePrice = item.price;
+        priceSource = 'menu';
       }
     } else if (fallback && item.price !== null) {
       effectivePrice = item.price;
@@ -268,23 +440,90 @@ export async function confirmPrices(
 
   const unverified = results.filter((p) => !p.verified).length;
   if (unverified > 0) {
-    notes.push(`有 ${unverified} 个候选未能取得官方报价，相关金额一律标注「未核实实付」。`);
+    notes.push(`有 ${unverified} 个候选未能取得**经核对的**官方报价，相关金额一律标注「未核实实付」。`);
   }
   const skippedByBudget = results.filter((p) => p.receipt.errorCode === 'BUDGET_EXCEEDED').length;
   if (skippedByBudget > 0) {
     notes.push(`有 ${skippedByBudget} 个候选因已达请求预算上限而未发起官方计价。`);
   }
-  notes.push(`本次共发起 ${state.requests} 次官方计价请求（预算上限 ${maxRequests}，并发 ${concurrency}）。`);
+  // ⚠️ 这句话必须只统计**真实 HTTP 请求**（评审 R6）：
+  //    离线读取、缓存命中、未发起都不算——否则「离线却声称发起 29 次请求」会再次发生。
+  const summary = summarizePricing(results);
+  notes.push(summary.note);
 
-  return { within, nearestOver, notes, receipts: results.map((r) => r.receipt) };
+  return { within, nearestOver, notes, receipts: results.map((r) => r.receipt), summary };
+}
+
+// ─────────────────── 请求事实汇总（评审 R6） ───────────────────
+
+/** 「本次到底做了什么」的如实统计——候选/离线/缓存/真实请求/成败/未发起 */
+export interface RequestSummary {
+  candidates: number;
+  /** 真实 HTTP 请求次数（离线=0、缓存命中不计） */
+  liveAttempts: number;
+  cacheHits: number;
+  offlineReads: number;
+  notInitiated: number;
+  succeeded: number;
+  failed: number;
+  retries: number;
+  verified: number;
+  unverified: number;
+  note: string;
+}
+
+export function summarizeReceipts(
+  receipts: readonly PriceReceipt[],
+  verifiedCount = 0,
+): RequestSummary {
+  const cacheHits = receipts.filter((r) => r.channel === 'cache').length;
+  const offlineReads = receipts.filter((r) => r.channel === 'offline').length;
+  const notInitiated = receipts.filter((r) => r.attempt === 0).length;
+  const liveAttempts = receipts.filter(
+    (r) => r.attempt >= 1 && r.channel !== 'cache' && r.channel !== 'offline',
+  ).length;
+  const succeeded = receipts.filter((r) => r.ok).length;
+  const failed = receipts.filter((r) => !r.ok).length;
+  const retries = receipts.reduce((n, r) => n + (r.retries ?? 0), 0);
+  const candidates = receipts.length;
+
+  return {
+    candidates,
+    liveAttempts,
+    cacheHits,
+    offlineReads,
+    notInitiated,
+    succeeded,
+    failed,
+    retries,
+    verified: verifiedCount,
+    unverified: candidates - verifiedCount,
+    note:
+      `本次共发起 ${liveAttempts} 次真实官方计价请求` +
+      `（候选 ${candidates} 项；离线读取 ${offlineReads}；缓存命中 ${cacheHits}；` +
+      `未发起 ${notInitiated}；成功 ${succeeded}；失败 ${failed}；重试 ${retries}）。`,
+  };
+}
+
+export function summarizePricing(results: readonly PricedCandidate[]): RequestSummary {
+  return summarizeReceipts(
+    results.map((r) => r.receipt),
+    results.filter((r) => r.verified).length,
+  );
 }
 
 // ─────────────────── 最终复核（P0-3） ───────────────────
 
 export interface RequoteResult {
-  /** 按官方报价重新确认后的金额；null 表示复核失败 */
+  /** 按官方报价重新确认后的金额；null 表示复核失败或未通过对象核对 */
   price: Cents | null;
   receipt: PriceReceipt;
+  /** 本次复核实际使用的报价请求（含完整组件与数量、组成指纹） */
+  request: PriceRequest;
+  /** 是否通过「报价对象核对」（false ⇒ 金额不得当"已核实"用） */
+  verified: boolean;
+  /** 复核返回的原始报价（供证据层引用） */
+  quote: PriceResult | null;
   /** 与初次报价是否一致（null 表示无法比较） */
   consistent: boolean | null;
   note: string;
@@ -295,24 +534,28 @@ export interface RequoteResult {
  *
  * 为什么必须做：初筛用的可能只是菜单价或较早的报价；用户真正看到的方案，
  * 必须有一份**当下**的官方报价 + 时刻 + 来源，否则"实时价格"四个字站不住。
+ *
+ * ⚠️ v3 整改（评审 R3/R4）：此前它只是「定义了、也有测试，但**从没被主流程调用**」，
+ * 且把 `A×2 + B×3` 压成 `list[0].productCode`（数量与其余组件全丢）。
+ * 现在：完整清单进请求、进收据、进指纹；并由 `recommendForMenu` **真正调用**。
  */
 export async function requoteFinal(
   candidate: PricedCandidate,
   pricer: Pricer,
-  /** 实际组件清单（套餐被替换后，这里应是替换后的组件）；缺省用候选自身 */
-  components?: readonly { productCode: string; quantity: number }[],
+  /** 实际报价对象（套餐被替换后，这里应是替换后的组成）；缺省用候选自身 */
+  components?: readonly PriceLine[],
 ): Promise<RequoteResult> {
-  const list = components ?? [{ productCode: candidate.item.code, quantity: 1 }];
+  const request = requestOf(candidate.item, 'final', components);
   let attempt: PriceAttempt;
   try {
-    attempt = await pricer({ ...candidate.item, code: list[0]!.productCode });
+    attempt = await pricer(candidate.item, request);
   } catch (e) {
     const err = e as { code?: string; message?: string };
     return {
       price: null,
       receipt: {
         tool: 'calculate-price',
-        argsSummary: buildArgsSummary(list),
+        argsSummary: buildArgsSummary(request.items),
         at: new Date().toISOString(),
         ok: false,
         attempt: 1,
@@ -320,26 +563,75 @@ export async function requoteFinal(
         ...(err.code === undefined ? {} : { errorCode: err.code }),
         errorMessage: err.message ?? String(e),
         durationMs: 0,
+        channel: 'live',
+        stage: 'final',
+        requestFingerprint: request.fingerprint,
       },
+      request,
+      verified: false,
+      quote: null,
       consistent: null,
       note: '最终复核失败——该方案的价格须标为「未核实」，不得以菜单价充当实付价',
     };
   }
 
+  // 收据以**本次请求**为准：完整清单 + 阶段 + 指纹（不再沿用 pricer 内部的单件摘要）
+  const receipt: PriceReceipt = {
+    ...attempt.receipt,
+    argsSummary: buildArgsSummary(request.items),
+    stage: 'final',
+    requestFingerprint: request.fingerprint,
+  };
+
+  const verdict = attempt.quote ? verifyQuoteBasket(request, attempt.quote) : null;
+  const basketOk = verdict?.status === 'matched';
+  const pricePresent = Boolean(attempt.quote && attempt.quote.price !== null);
+  const verified = pricePresent && basketOk;
+  const after: Cents | null = verified ? (attempt.quote!.price as Cents) : null;
   const before = candidate.effectivePrice;
-  const after = attempt.quote?.price ?? null;
   const consistent = before === null || after === null ? null : before === after;
+
   return {
     price: after,
-    receipt: attempt.receipt,
+    receipt,
+    request,
+    verified,
+    quote: attempt.quote,
     consistent,
-    note:
-      attempt.receipt.ok
-        ? consistent === true
-          ? `复核一致（¥${(toYuan(after as Cents)).toFixed(2)}）`
+    note: !pricePresent
+      ? '复核未成功，价格来源降级为菜单价并须标注「未核实」'
+      : !basketOk
+        ? `复核响应未通过报价对象核对（${verdict?.detail ?? '无明细'}）——结果标为「未核实」`
+        : consistent === true
+          ? `复核一致（¥${toYuan(after as Cents).toFixed(2)}）`
           : consistent === false
             ? `复核与初次报价不同（¥${before === null ? '—' : toYuan(before).toFixed(2)} → ¥${after === null ? '—' : toYuan(after).toFixed(2)}），以复核价为准`
-            : '复核成功，但初次报价缺失，无法比较'
-        : '复核未成功，价格来源降级为菜单价并须标注「未核实」',
+            : '复核成功，但初次报价缺失，无法比较',
+  };
+}
+
+/**
+ * 把最终复核结果落回候选：重算预算判定、价格来源与「已核实」标记。
+ * （评审 C：复核变价后，预算/评分/解释都必须跟着变。）
+ */
+export function applyRequote(
+  candidate: PricedCandidate,
+  requote: RequoteResult,
+  budgetCents: Cents,
+): PricedCandidate {
+  const effectivePrice = requote.price ?? candidate.effectivePrice;
+  const priceSource: 'official' | 'menu' = requote.verified ? 'official' : candidate.priceSource;
+  const overByCents =
+    effectivePrice === null ? Number.POSITIVE_INFINITY : Math.max(0, effectivePrice - budgetCents);
+  return {
+    ...candidate,
+    quote: requote.quote ?? candidate.quote,
+    receipt: requote.receipt,
+    effectivePrice,
+    priceSource,
+    verified: requote.verified,
+    withinBudget: effectivePrice !== null && effectivePrice <= budgetCents,
+    overByCents,
+    notes: [...candidate.notes, `最终复核：${requote.note}`],
   };
 }
