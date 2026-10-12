@@ -142,6 +142,30 @@ export function looksLikeCombo(name: string): boolean {
   return COMBO_RE.test(name);
 }
 
+/**
+ * **主件**识别（v3.2，人工审核 2026-10-12 发现）：
+ * 汉堡/主食类若未收录，整份套餐的「已知部分之和」会**严重偏低**
+ * （实例：龙焰芝士棒鸡腿堡三件套 436 kcal 只等于「中薯条 289 + 可乐 147」，汉堡本体缺失）。
+ */
+const STAPLE_RE = /(汉堡|主食|主餐|主件|肉夹|堡|卷|饭|面|披萨)/;
+/** 非食品周边（玩具/贴纸/搪胶等）——不计入「主件缺失」判定，避免误伤 */
+const NON_FOOD_RE = /(玩具|贴纸|帽|捶|挠|公仔|徽章|盲盒|手办|水手)/;
+
+/** 某个未匹配组件是否属于「主件」（决定是否还敢给营养数字） */
+export function isStapleComponent(roundName: string, choiceName: string): boolean {
+  if (NON_FOOD_RE.test(choiceName) || NON_FOOD_RE.test(roundName)) return false;
+  return STAPLE_RE.test(roundName) || STAPLE_RE.test(choiceName);
+}
+
+/** 把合计整体「抹平为零缺失」——用于「不给数字」的情形（**不是**填 0） */
+function blankTotals(totals: NutritionTotals): NutritionTotals {
+  const out = {} as NutritionTotals;
+  for (const f of NUMERIC_FIELDS) {
+    out[f] = { value: null, complete: false, knownCount: 0, totalCount: totals[f].totalCount };
+  }
+  return out;
+}
+
 /** 取数来源上下文：让「分析」能够如实地把执行事实写进结果（评审 R7） */
 export interface DataSourceContext {
   channel: 'live' | 'offline' | 'history';
@@ -292,13 +316,30 @@ export function analyzeCombo(
     if (confidence === 'A' || confidence === 'B') confidence = 'C';
   }
 
+  // ── 主件未收录 ⇒ **不给营养数字**（v3.2，人工审核 2026-10-12 发现的误配）──
+  // 为什么必须这么严：漏掉主件时「已知部分之和」会低到误导（436 kcal 里没有汉堡），
+  // `≥` 标记不足以抵消；按铁律「信息不足时坦率少给」，此时**不提供数字**并降为 D。
+  const stapleMissing = d.components.filter(
+    (c) => c.match.method === 'unmatched' && isStapleComponent(c.roundName, c.choiceName),
+  );
+  let totals = d.totals;
+  if (stapleMissing.length > 0) {
+    totals = blankTotals(d.totals);
+    confidence = 'D';
+    notes.push(
+      `主件未收录：${stapleMissing.map((c) => c.choiceName).join('、')} 在官方营养表中**没有对应条目**，` +
+        `已知组件之和**不具代表性**（会让热量严重偏低）——故本项**不提供营养数字**（D 级），` +
+        `仅可确认其组成与价格。`,
+    );
+  }
+
   return {
     code: item.code,
     name: item.name,
     price: item.currentPrice,
     category: item.category ?? null,
     kind: 'combo',
-    totals: d.totals,
+    totals,
     confidence,
     evidence,
     unmatchedComponents: d.unmatchedComponents,
