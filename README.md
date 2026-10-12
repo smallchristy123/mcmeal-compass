@@ -201,10 +201,11 @@ mcmeal-compass/
 │   ├── check-combo-decomposition.ts  # 套餐展开验证（在线，需 Token）
 │   ├── capture-fixtures.ts      # 采集（写 work/captures/，**不碰** fixtures/；在线，需 Token）
 │   └── secrets-scan.mjs         # 凭据扫描（工作树 + git 历史；白名单排除占位/测试假值）
-└── tests/                       # 单元测试（node:test，**295 个用例**）
+└── tests/                       # 单元测试（node:test，**306 个用例**）
     ├── v3-acceptance.test.ts    # v3 验收要求（R1–R10，**只可迁移、不可删改**）
     ├── v3-probe-regression.test.ts  # v3 复审探针 R11–R13 回归（首选元数据/来源口径/失败收据）
-    └── v33-review-regression.test.ts # v3.2 复评回归（详情错误透传/混合轮次主件/禁止合成 live 成功）
+    ├── v33-review-regression.test.ts # v3.2 复评回归（详情错误透传/混合轮次主件/禁止合成 live 成功）
+    └── v34-review-regression.test.ts # v3.3 复评回归（时区推断/D 级分层再分/别名边界）
 ```
 
 ## 开发与测试
