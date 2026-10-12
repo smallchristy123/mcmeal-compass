@@ -31,7 +31,7 @@ import {
   type Pricer,
   type PriceRequest,
 } from './pricing.ts';
-import { freshnessOf } from './freshness.ts';
+import { freshnessOf, localIsoNow } from './freshness.ts';
 import { pathToFileURL } from 'node:url';
 
 // ─────────────────── 参数解析 ───────────────────
@@ -152,6 +152,13 @@ interface Sourced {
   capturedAtByKind: { menu: string; nutrition: string; detail: string; price: string };
   /** 取数来源（供执行轨迹**如实**标注，评审 R7） */
   dataOrigin: { channel: 'live' | 'offline'; snapshotId?: string };
+  /**
+   * **本地取数时刻**（带偏移，如 `2026-10-12T16:09:12+08:00`）——v3.4。
+   * 官方 `datetime` 不带时区，且实测同一端点不同工具返回的时区可能不同（差 8 小时）；
+   * 有本地观测时刻，`freshnessOf` 才能**推断**服务端时区，而非一律按 +08:00 假定。
+   * 离线快照并非"此刻取到"，故**不填**。
+   */
+  observedAt?: string;
   /**
    * 取数方在**实际调用点**产生的收据（R13）：
    * 离线＝读夹具（标 OFFLINE_FIXTURE，不伪装成已调用）；在线＝真实调用（标 live/ok）。
@@ -357,13 +364,18 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
     }
   };
 
-  const nowIso = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  // v3.4（v3.3 复评第 1 条）：**本地时刻带偏移**。
+  // 此前用 `toISOString()` 只得到 UTC 墙钟、又去掉了 `Z`，与「无时区按 +08:00 解读」
+  // 叠加，凭空差出 8 小时（刚落地的案例被算成约 480 分钟前）。
+  const observedAt = localIsoNow();
+  const nowIso = observedAt;
   return {
     storeCode,
     storeName,
     capturedAt: nowIso,
     // 在线模式的四类数据都产生于本次调用（价格单独用报价收据的时刻）
     capturedAtByKind: { menu: nowIso, nutrition: nowIso, detail: nowIso, price: nowIso },
+    observedAt,
     dataOrigin: { channel: 'live' },
     sourceReceipts,
     items,
@@ -421,7 +433,11 @@ export function renderText(
   L.push(`数据    ${src.capturedAt}　·　${src.modeLabel}`);
   {
     // ⚠️ 新鲜度：过期的数据**只能作历史样例**，不得以"当前可售/实时价格"的口吻输出
-    const f = freshnessOf(src.capturedAt, 'menu');
+    const f = freshnessOf(
+      src.capturedAt,
+      'menu',
+      src.observedAt === undefined ? {} : { observedAt: src.observedAt },
+    );
     L.push(`时效    ${f.note}`);
     if (f.status !== 'fresh') {
       L.push('⛔ 上方数据**不是**「当前可售」状态，也**不是**实时价格——仅作历史样例演示。');
@@ -563,7 +579,11 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
   L.push(`门店    ${src.storeName}${src.storeCode ? `（${src.storeCode}）` : ''}`);
   L.push(`数据    ${src.capturedAt}　·　${src.modeLabel}`);
   {
-    const f = freshnessOf(src.capturedAt, 'menu');
+    const f = freshnessOf(
+      src.capturedAt,
+      'menu',
+      src.observedAt === undefined ? {} : { observedAt: src.observedAt },
+    );
     L.push(`时效    ${f.note}`);
     if (f.status !== 'fresh') {
       L.push('⛔ 本结果基于**历史样例数据**，不代表当前可售，价格亦未经实时核价。');
@@ -658,17 +678,20 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
 /** 分数据源的新鲜度（评审 P1-4：文本要给，**JSON 也要给**） */
 export function freshnessReport(src: Sourced): {
   generatedAt: string;
+  observedAt: string | null;
   capturedAt: Record<string, string>;
   sources: Record<string, ReturnType<typeof freshnessOf>>;
 } {
+  const opts = src.observedAt === undefined ? {} : { observedAt: src.observedAt };
   return {
     generatedAt: new Date().toISOString(),
+    observedAt: src.observedAt ?? null,
     capturedAt: { ...src.capturedAtByKind },
     sources: {
-      menu: freshnessOf(src.capturedAtByKind.menu, 'menu'),
-      nutrition: freshnessOf(src.capturedAtByKind.nutrition, 'nutrition'),
-      'combo-detail': freshnessOf(src.capturedAtByKind.detail, 'combo-detail'),
-      price: freshnessOf(src.capturedAtByKind.price, 'price'),
+      menu: freshnessOf(src.capturedAtByKind.menu, 'menu', opts),
+      nutrition: freshnessOf(src.capturedAtByKind.nutrition, 'nutrition', opts),
+      'combo-detail': freshnessOf(src.capturedAtByKind.detail, 'combo-detail', opts),
+      price: freshnessOf(src.capturedAtByKind.price, 'price', opts),
     },
   };
 }

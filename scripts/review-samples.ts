@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { loadFixtures, fixtureDetailLoader } from '../src/fixtures.ts';
 import { NutritionMatcher } from '../src/matching.ts';
 import { DEFAULT_ALIASES } from '../src/aliases.ts';
-import { analyzeMenu } from '../src/analyze.ts';
+import { analyzeMenu, looksLikeCombo } from '../src/analyze.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -34,7 +34,10 @@ const STRATA: { key: string; label: string; take: number }[] = [
   { key: 'beverage', label: '饮料（含份量歧义）', take: 4 },
   { key: 'size-ambiguous', label: '份量歧义（待用户指定）', take: 3 },
   { key: 'flavor-ambiguous', label: '口味歧义（待用户指定）', take: 3 },
-  { key: 'new-item', label: '新品未收录（营养表滞后）', take: 4 },
+  { key: 'new-item', label: '新品未收录（营养表滞后）', take: 2 },
+  // v3.4（v3.3 复评）：D 级里「套餐名疑似、但详情不可用⇒降级直配」**不是**「新品滞后」，
+  // 混在一层会污染覆盖率与误差解释，故单列一层（take 与 new-item 此消彼长，总数不变）。
+  { key: 'detail-unavailable', label: '详情不可用（无法确认）', take: 2 },
   { key: 'non-food', label: '非食品周边（玩具/贴纸）', take: 2 },
 ];
 
@@ -62,7 +65,7 @@ const csvCell = (v: unknown): string => {
  * 分层归类。
  * @param matchMethod 该条的**匹配方式**（由匹配器直接给出，比从证据文本猜更可靠）
  */
-function classify(
+export function classify(
   item: {
     name: string;
     confidence: string;
@@ -77,7 +80,12 @@ function classify(
   if ((item.flavorCandidates?.length ?? 0) >= 2) return 'flavor-ambiguous';
   // 套餐展开失败时可能落到这里：先判非食品，再判既有营养
   if (/玩具|贴纸|帽|捶|挠|公仔|徽章|盲盒|手办|水手/.test(item.name)) return 'non-food';
-  if (item.confidence === 'D') return 'new-item';
+  // v3.4（v3.3 复评）：D 级须再分——
+  //   套餐名疑似却拿不到详情 → 「详情不可用（无法确认）」，**不能**记成「新品未收录」；
+  //   否则会把「没有可用证据」误报为「营养表滞后」，污染分层覆盖率与误差解释。
+  if (item.confidence === 'D') {
+    return looksLikeCombo(item.name) ? 'detail-unavailable' : 'new-item';
+  }
   if (matchMethod === 'alias' || matchMethod === 'variant') return 'single-alias';
   const isBeverage = /咖啡|可乐|雪碧|红茶|绿茶|果汁|奶茶|拿铁|美式|卡布|怡泉|纯悦|矿泉水|牛奶|柠檬茶/.test(
     item.name,
