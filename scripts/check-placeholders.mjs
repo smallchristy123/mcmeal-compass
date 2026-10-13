@@ -66,9 +66,15 @@ const ALLOW_BY_BASENAME = [
     lift: '若日后改用不带该字样的列名，本条白名单即应删除。',
   },
   {
+    re: /^placeholders-check\.json$/,
+    patternIds: ['unverified-placeholder', 'tofill-placeholder', 'tbd', 'lorem', 'bad-timestamp'],
+    why: '**本检查器自身的机器可读报告**——按设计要引用它所检出的字符串（含白名单项的摘录）作为凭据。',
+    lift: '不需解除——除非报告改为不记录摘录。',
+  },
+  {
     re: /^git-history-patch\.txt$/,
-    patternIds: ['unverified-placeholder', 'tofill-placeholder', 'tbd', 'lorem'],
-    why: '**git 全历史补丁原文**，按定义逐字含各次提交的行（包括后来被改掉的旧字样），供第三方独立重扫。',
+    patternIds: ['unverified-placeholder', 'tofill-placeholder', 'tbd', 'lorem', 'bad-timestamp'],
+    why: '**git 全历史补丁原文**，按定义逐字含各次提交的行（包括后来被改掉的旧字样与旧时间串），供第三方独立重扫。',
     lift: '不需解除——除非不再随包分发该证据文件。',
   },
 ];
@@ -108,13 +114,20 @@ const check = (relPath, absPath, inExtra) => {
       else findings.push(hit);
     }
     for (const bad of badTimestamps(line)) {
-      findings.push({
+      const hit = {
         file: relPath,
         line: i + 1,
         pattern: 'bad-timestamp',
         why: '时间戳不合法（ISO 8601 无法解析）',
         excerpt: bad,
-      });
+      };
+      // ⚠️ 与占位字样走**同一套白名单**——否则原始 git 补丁里的旧时间串会被误拦
+      const base2 = relPath.split('/').pop() ?? relPath;
+      const byName2 = ALLOW_BY_BASENAME.find((a) => a.re.test(base2) && a.patternIds.includes('bad-timestamp'));
+      const wl2 = !inExtra && ALLOW.find((a) => a.file === relPath && a.patternIds.includes('bad-timestamp'));
+      if (byName2) allowed.push({ ...hit, allowReason: byName2.why, lift: byName2.lift });
+      else if (wl2) allowed.push({ ...hit, allowReason: wl2.why, lift: wl2.lift });
+      else findings.push(hit);
     }
   });
 };
