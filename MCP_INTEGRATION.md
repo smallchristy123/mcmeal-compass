@@ -1,7 +1,8 @@
 # MCP 集成说明 · McMeal Compass
 
 > 本文件说明本项目**实际使用**的麦当劳 MCP Server、Tool、调用流程与业务价值。
-> 凡标注 `【待实测补齐】` 的条目，将在取得 MCP Token 并完成真实调用后回填证据。
+> 文中所载端点、协议、限流口径与调用样例，**均已由真实端点调用核验**，**无未核验的占位条目**；
+> 逐条原始响应、响应哈希与证据哈希见交付包 `online-evidence/`。
 
 ## 1. Server 端点与协议
 
@@ -61,9 +62,21 @@
 
 ## 4. 调用样例
 
-### 4.1 成功样例（脱敏）
+### 4.1 成功样例（脱敏 · 2026-10-13 真实端点实测）
 
-> 【待实测补齐】取得 Token 后，回填一次 `list-nutrition-foods` 的脱敏调用记录（脱敏、去除账号相关字段），注明测试日期。
+`list-nutrition-foods`（无入参）真实响应要点：
+
+| 字段 | 实测值 |
+|---|---|
+| 业务信封 | `success: true` · `code: 200` · `message: "请求成功"` |
+| 服务端时间 | `2026-10-13 00:33:31`（服务端原样回显，本项目按 `+08:00` 解读并标注） |
+| `traceId` | `0ada538f93dafe4baca1838e8141af71` |
+| `data` | TOON 字符串，表头 `[160]{productName,nutritionDescription,energyKj,energyKcal,protein,fat,carbohydrate,sodium,calcium}` |
+| 响应大小 | 6,666 字符 / **8,714 字节**（UTF-8 口径，`responseBytes`） |
+
+> 本项目**不使用**返回文本中的任何账号相关信息；完整逐条原始响应与哈希见交付包
+> `online-evidence/`（执行方独立认证调用）与 `online-evidence/independent/pkgroot-run/`（包根复跑）；
+> 第三方的独立在线复核结果见**复评方出具的复评报告**。
 
 ### 4.2 错误 / 降级样例
 
