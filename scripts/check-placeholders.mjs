@@ -72,6 +72,12 @@ const ALLOW_BY_BASENAME = [
     lift: '不需解除——除非报告改为不记录摘录。',
   },
   {
+    re: /^review-samples\.ts$/,
+    patternIds: ['tofill-placeholder'],
+    why: '待填样本表的**列名常量**所在源码（随内层源码包分发，且包内无 `.git` 故路径白名单不生效）。',
+    lift: '若日后改用不带该字样的列名，本条白名单即应删除。',
+  },
+  {
     re: /^git-history-patch\.txt$/,
     patternIds: ['unverified-placeholder', 'tofill-placeholder', 'tbd', 'lorem', 'bad-timestamp'],
     why: '**git 全历史补丁原文**，按定义逐字含各次提交的行（包括后来被改掉的旧字样与旧时间串），供第三方独立重扫。',
