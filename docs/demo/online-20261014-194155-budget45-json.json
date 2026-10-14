@@ -1,0 +1,637 @@
+{
+  "store": {
+    "code": "3450024",
+    "name": "麦当劳重庆嘉年华餐厅"
+  },
+  "capturedAt": "2026-10-14T19:41:55+08:00",
+  "mode": "实时调用（mcd-mcp 1.0.0 · 协议 2025-06-18/legacy）",
+  "freshness": {
+    "generatedAt": "2026-10-14T11:41:56.379Z",
+    "observedAt": "2026-10-14T19:41:55+08:00",
+    "capturedAt": {
+      "menu": "2026-10-14T19:41:55+08:00",
+      "nutrition": "2026-10-14T19:41:55+08:00",
+      "detail": "2026-10-14T19:41:55+08:00",
+      "price": "2026-10-14T19:41:55+08:00"
+    },
+    "sources": {
+      "menu": {
+        "kind": "menu",
+        "status": "fresh",
+        "capturedAt": "2026-10-14T19:41:55+08:00",
+        "ageMinutes": 0,
+        "ttlMinutes": 60,
+        "note": "数据产生于 2026-10-14T19:41:55+08:00（0 分钟前，时效 60 分钟内）",
+        "timezoneAssumed": false,
+        "timezoneBasis": "explicit",
+        "timezone": "+08:00",
+        "rawParsedAs": "2026-10-14T19:41:55+08:00"
+      },
+      "nutrition": {
+        "kind": "nutrition",
+        "status": "fresh",
+        "capturedAt": "2026-10-14T19:41:55+08:00",
+        "ageMinutes": 0,
+        "ttlMinutes": 1440,
+        "note": "数据产生于 2026-10-14T19:41:55+08:00（0 分钟前，时效 1440 分钟内）",
+        "timezoneAssumed": false,
+        "timezoneBasis": "explicit",
+        "timezone": "+08:00",
+        "rawParsedAs": "2026-10-14T19:41:55+08:00"
+      },
+      "combo-detail": {
+        "kind": "combo-detail",
+        "status": "fresh",
+        "capturedAt": "2026-10-14T19:41:55+08:00",
+        "ageMinutes": 0,
+        "ttlMinutes": 60,
+        "note": "数据产生于 2026-10-14T19:41:55+08:00（0 分钟前，时效 60 分钟内）",
+        "timezoneAssumed": false,
+        "timezoneBasis": "explicit",
+        "timezone": "+08:00",
+        "rawParsedAs": "2026-10-14T19:41:55+08:00"
+      },
+      "price": {
+        "kind": "price",
+        "status": "fresh",
+        "capturedAt": "2026-10-14T19:41:55+08:00",
+        "ageMinutes": 0,
+        "ttlMinutes": 10,
+        "note": "数据产生于 2026-10-14T19:41:55+08:00（0 分钟前，时效 10 分钟内）",
+        "timezoneAssumed": false,
+        "timezoneBasis": "explicit",
+        "timezone": "+08:00",
+        "rawParsedAs": "2026-10-14T19:41:55+08:00"
+      }
+    }
+  },
+  "request": {
+    "budgetCny": 45,
+    "priority": "balance",
+    "scope": "meal",
+    "energyTargetKcal": null,
+    "minimumProteinGrams": null,
+    "avoidSugaryDrinks": false,
+    "declaredAllergy": false
+  },
+  "recommendation": {
+    "plans": [
+      {
+        "key": "balance",
+        "label": "均衡优先",
+        "priced": {
+          "item": {
+            "code": "9900003586",
+            "name": "双层深海鳕鱼堡",
+            "price": 2550,
+            "category": "巨无霸\n牛鱼肉堡",
+            "kind": "single",
+            "totals": {
+              "energyKcal": {
+                "value": 485,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "protein": {
+                "value": 28,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "fat": {
+                "value": 21,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "carbohydrate": {
+                "value": 46,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "sodium": {
+                "value": 917,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              }
+            },
+            "confidence": "A",
+            "evidence": [
+              {
+                "kind": "official-single",
+                "label": "官方单品营养：双层深海鳕鱼堡"
+              }
+            ],
+            "unmatchedComponents": [],
+            "sourceTrace": [
+              {
+                "tool": "query-meals",
+                "channel": "live",
+                "ok": true,
+                "at": "2026-10-14T11:41:55.238Z",
+                "argsSummary": "storeCode=<已脱敏>",
+                "stage": "menu",
+                "requestId": "live#query-meals"
+              },
+              {
+                "tool": "list-nutrition-foods",
+                "channel": "live",
+                "ok": true,
+                "at": "2026-10-14T11:41:55.379Z",
+                "argsSummary": "（无参数）",
+                "stage": "nutrition",
+                "requestId": "live#list-nutrition-foods"
+              }
+            ],
+            "notes": [
+              "精确名称命中（归一化后同为「双层深海鳕鱼堡」）"
+            ]
+          },
+          "quote": {
+            "productOriginalPrice": 2550,
+            "productPrice": 2550,
+            "deliveryPrice": null,
+            "packingPrice": null,
+            "tablewarePrice": null,
+            "originalPrice": 2550,
+            "discount": 0,
+            "price": 2550,
+            "productList": [
+              {
+                "productCode": "9900003586",
+                "productName": "双层深海鳕鱼堡",
+                "quantity": 1,
+                "originalSubtotal": 2550,
+                "subtotal": 2550
+              }
+            ],
+            "takeWayList": [
+              {
+                "code": "eat-in",
+                "title": "堂食",
+                "subtitle": "店内用餐"
+              },
+              {
+                "code": "take-in-store",
+                "title": "外带",
+                "subtitle": "店内自提"
+              }
+            ]
+          },
+          "receipt": {
+            "tool": "calculate-price",
+            "argsSummary": "items=[9900003586×1]",
+            "at": "2026-10-14T11:41:58.406Z",
+            "stage": "final",
+            "requestFingerprint": "d836738ee34e",
+            "ok": true,
+            "attempt": 1,
+            "responseHash": "b8378ffad3b1",
+            "durationMs": 129,
+            "channel": "live"
+          },
+          "effectivePrice": 2550,
+          "priceSource": "official",
+          "withinBudget": true,
+          "overByCents": 0,
+          "notes": [
+            "最终复核：复核一致（¥25.50）"
+          ],
+          "verified": true
+        },
+        "score": {
+          "budgetScore": 0.4883720930232558,
+          "proteinScore": 0.4,
+          "energyFit": null,
+          "total": 0.4441860465116279,
+          "weightsUsed": {
+            "budget": 0.5,
+            "protein": 0.5,
+            "energyFit": 0
+          },
+          "notes": [
+            "用户未指定本餐热量目标，其权重已重新分配"
+          ]
+        },
+        "reason": "价格与蛋白质综合权衡，无单一极端偏好（详见分量明细）",
+        "explanation": {
+          "statements": [
+            "本方案为「双层深海鳕鱼堡」——单品，营养可信度 A 级。",
+            "官方计价实付 ¥25.50（含优惠与费用，已核）。",
+            "热量 485 kcal。",
+            "蛋白质 28 g。"
+          ],
+          "evidenceIds": [
+            "menu:9900003586",
+            "nut:双层深海鳕鱼堡",
+            "price:9900003586"
+          ],
+          "toolCallTrace": [
+            {
+              "tool": "query-meals",
+              "argsSummary": "storeCode=<已脱敏>",
+              "ok": true,
+              "at": "2026-10-14T11:41:55.238Z",
+              "channel": "live"
+            },
+            {
+              "tool": "list-nutrition-foods",
+              "argsSummary": "（无参数）",
+              "ok": true,
+              "at": "2026-10-14T11:41:55.379Z",
+              "channel": "live"
+            },
+            {
+              "tool": "calculate-price",
+              "argsSummary": "items=[9900003586×1]",
+              "ok": true,
+              "at": "2026-10-14T11:41:58.406Z",
+              "ms": 129,
+              "channel": "live",
+              "responseHash": "b8378ffad3b1"
+            }
+          ]
+        }
+      },
+      {
+        "key": "budget",
+        "label": "预算优先",
+        "priced": {
+          "item": {
+            "code": "521156",
+            "name": "那么大鸡排（椒盐风味）",
+            "price": 1450,
+            "category": "炸鸡",
+            "kind": "single",
+            "totals": {
+              "energyKcal": {
+                "value": 385,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "protein": {
+                "value": 24,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "fat": {
+                "value": 21,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "carbohydrate": {
+                "value": 24,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "sodium": {
+                "value": 996,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              }
+            },
+            "confidence": "B",
+            "evidence": [
+              {
+                "kind": "official-single",
+                "label": "官方单品营养：那么大鸡排"
+              }
+            ],
+            "unmatchedComponents": [],
+            "sourceTrace": [
+              {
+                "tool": "query-meals",
+                "channel": "live",
+                "ok": true,
+                "at": "2026-10-14T11:41:55.238Z",
+                "argsSummary": "storeCode=<已脱敏>",
+                "stage": "menu",
+                "requestId": "live#query-meals"
+              },
+              {
+                "tool": "list-nutrition-foods",
+                "channel": "live",
+                "ok": true,
+                "at": "2026-10-14T11:41:55.379Z",
+                "argsSummary": "（无参数）",
+                "stage": "nutrition",
+                "requestId": "live#list-nutrition-foods"
+              }
+            ],
+            "notes": [
+              "别名命中（含份量推断）：那么大鸡排（椒盐风味） → 那么大鸡排。依据：营养表按基础品名收录，未区分风味；风味差异不改变主体份量",
+              "可信度上限为 B（因含推断成分）"
+            ]
+          },
+          "quote": {
+            "productOriginalPrice": 1450,
+            "productPrice": 1450,
+            "deliveryPrice": null,
+            "packingPrice": null,
+            "tablewarePrice": null,
+            "originalPrice": 1450,
+            "discount": 0,
+            "price": 1450,
+            "productList": [
+              {
+                "productCode": "521156",
+                "productName": "那么大鸡排（椒盐风味）",
+                "quantity": 1,
+                "originalSubtotal": 1450,
+                "subtotal": 1450
+              }
+            ],
+            "takeWayList": [
+              {
+                "code": "eat-in",
+                "title": "堂食",
+                "subtitle": "店内用餐"
+              },
+              {
+                "code": "take-in-store",
+                "title": "外带",
+                "subtitle": "店内自提"
+              }
+            ]
+          },
+          "receipt": {
+            "tool": "calculate-price",
+            "argsSummary": "items=[521156×1]",
+            "at": "2026-10-14T11:41:58.535Z",
+            "stage": "final",
+            "requestFingerprint": "0825de3f0a0a",
+            "ok": true,
+            "attempt": 1,
+            "responseHash": "e323e50add83",
+            "durationMs": 125,
+            "channel": "live"
+          },
+          "effectivePrice": 1450,
+          "priceSource": "official",
+          "withinBudget": true,
+          "overByCents": 0,
+          "notes": [
+            "最终复核：复核一致（¥14.50）"
+          ],
+          "verified": true
+        },
+        "score": {
+          "budgetScore": 1,
+          "proteinScore": 0,
+          "energyFit": null,
+          "total": 0.7222222222222222,
+          "weightsUsed": {
+            "budget": 0.7222222222222222,
+            "protein": 0.2777777777777778,
+            "energyFit": 0
+          },
+          "notes": [
+            "用户未指定本餐热量目标，其权重已重新分配"
+          ]
+        },
+        "reason": "在预算内的候选中**官方实付最低**（¥14.50，已核实）",
+        "explanation": {
+          "statements": [
+            "本方案为「那么大鸡排（椒盐风味）」——单品，营养可信度 B 级。",
+            "官方计价实付 ¥14.50（含优惠与费用，已核）。",
+            "热量 385 kcal。",
+            "蛋白质 24 g。"
+          ],
+          "evidenceIds": [
+            "menu:521156",
+            "nut:那么大鸡排",
+            "price:521156"
+          ],
+          "toolCallTrace": [
+            {
+              "tool": "query-meals",
+              "argsSummary": "storeCode=<已脱敏>",
+              "ok": true,
+              "at": "2026-10-14T11:41:55.238Z",
+              "channel": "live"
+            },
+            {
+              "tool": "list-nutrition-foods",
+              "argsSummary": "（无参数）",
+              "ok": true,
+              "at": "2026-10-14T11:41:55.379Z",
+              "channel": "live"
+            },
+            {
+              "tool": "calculate-price",
+              "argsSummary": "items=[521156×1]",
+              "ok": true,
+              "at": "2026-10-14T11:41:58.535Z",
+              "ms": 125,
+              "channel": "live",
+              "responseHash": "e323e50add83"
+            }
+          ]
+        }
+      },
+      {
+        "key": "protein",
+        "label": "蛋白质优先",
+        "priced": {
+          "item": {
+            "code": "511781",
+            "name": "培根安格斯厚牛堡",
+            "price": 3600,
+            "category": "安格斯MAX\n厚牛堡",
+            "kind": "single",
+            "totals": {
+              "energyKcal": {
+                "value": 707,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "protein": {
+                "value": 34,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "fat": {
+                "value": 44,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "carbohydrate": {
+                "value": 43,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              },
+              "sodium": {
+                "value": 1037,
+                "complete": true,
+                "knownCount": 1,
+                "totalCount": 1
+              }
+            },
+            "confidence": "A",
+            "evidence": [
+              {
+                "kind": "official-single",
+                "label": "官方单品营养：培根安格斯厚牛堡"
+              }
+            ],
+            "unmatchedComponents": [],
+            "sourceTrace": [
+              {
+                "tool": "query-meals",
+                "channel": "live",
+                "ok": true,
+                "at": "2026-10-14T11:41:55.238Z",
+                "argsSummary": "storeCode=<已脱敏>",
+                "stage": "menu",
+                "requestId": "live#query-meals"
+              },
+              {
+                "tool": "list-nutrition-foods",
+                "channel": "live",
+                "ok": true,
+                "at": "2026-10-14T11:41:55.379Z",
+                "argsSummary": "（无参数）",
+                "stage": "nutrition",
+                "requestId": "live#list-nutrition-foods"
+              }
+            ],
+            "notes": [
+              "精确名称命中（归一化后同为「培根安格斯厚牛堡」）"
+            ]
+          },
+          "quote": {
+            "productOriginalPrice": 3600,
+            "productPrice": 3600,
+            "deliveryPrice": null,
+            "packingPrice": null,
+            "tablewarePrice": null,
+            "originalPrice": 3600,
+            "discount": 0,
+            "price": 3600,
+            "productList": [
+              {
+                "productCode": "511781",
+                "productName": "培根安格斯厚牛堡",
+                "quantity": 1,
+                "originalSubtotal": 3600,
+                "subtotal": 3600
+              }
+            ],
+            "takeWayList": [
+              {
+                "code": "eat-in",
+                "title": "堂食",
+                "subtitle": "店内用餐"
+              },
+              {
+                "code": "take-in-store",
+                "title": "外带",
+                "subtitle": "店内自提"
+              }
+            ]
+          },
+          "receipt": {
+            "tool": "calculate-price",
+            "argsSummary": "items=[511781×1]",
+            "at": "2026-10-14T11:41:58.660Z",
+            "stage": "final",
+            "requestFingerprint": "761c59eff1b1",
+            "ok": true,
+            "attempt": 1,
+            "responseHash": "6ad0b6298399",
+            "durationMs": 168,
+            "channel": "live"
+          },
+          "effectivePrice": 3600,
+          "priceSource": "official",
+          "withinBudget": true,
+          "overByCents": 0,
+          "notes": [
+            "最终复核：复核一致（¥36.00）"
+          ],
+          "verified": true
+        },
+        "score": {
+          "budgetScore": 0,
+          "proteinScore": 1,
+          "energyFit": null,
+          "total": 0.7647058823529411,
+          "weightsUsed": {
+            "budget": 0.23529411764705882,
+            "protein": 0.7647058823529411,
+            "energyFit": 0
+          },
+          "notes": [
+            "用户未指定本餐热量目标，其权重已重新分配"
+          ]
+        },
+        "reason": "蛋白质 34g 为候选最高（约 0.9 g/元）",
+        "explanation": {
+          "statements": [
+            "本方案为「培根安格斯厚牛堡」——单品，营养可信度 A 级。",
+            "官方计价实付 ¥36.00（含优惠与费用，已核）。",
+            "热量 707 kcal。",
+            "蛋白质 34 g。",
+            "—— 与「均衡优先」对照 ——",
+            "方案 A的「实付价格」比对照多 10.50元（36.00元 vs 25.50元，此项较差）",
+            "方案 A的「蛋白质」比对照多 6.0g（34.0g vs 28.0g，此项更优）",
+            "方案 A的「热量」比对照多 222kcal（707kcal vs 485kcal，未设该目标，仅报数值、不作优劣判断）",
+            "方案 A的「钠」比对照多 120mg（1037mg vs 917mg，此项较差）"
+          ],
+          "evidenceIds": [
+            "menu:511781",
+            "nut:培根安格斯厚牛堡",
+            "price:511781"
+          ],
+          "toolCallTrace": [
+            {
+              "tool": "query-meals",
+              "argsSummary": "storeCode=<已脱敏>",
+              "ok": true,
+              "at": "2026-10-14T11:41:55.238Z",
+              "channel": "live"
+            },
+            {
+              "tool": "list-nutrition-foods",
+              "argsSummary": "（无参数）",
+              "ok": true,
+              "at": "2026-10-14T11:41:55.379Z",
+              "channel": "live"
+            },
+            {
+              "tool": "calculate-price",
+              "argsSummary": "items=[511781×1]",
+              "ok": true,
+              "at": "2026-10-14T11:41:58.660Z",
+              "ms": 168,
+              "channel": "live",
+              "responseHash": "6ad0b6298399"
+            }
+          ]
+        }
+      }
+    ],
+    "primaryKey": "balance",
+    "primaryNote": "本轮偏好＝均衡优先：三张卡各对应一种视角，**首选（第 1 张）即按该偏好选出**，其余供横向对照。",
+    "shortfallNote": null,
+    "safetyNotice": null,
+    "overBudgetNote": null,
+    "notes": [
+      "帕累托前沿（实付价↓ × 蛋白质↑）共 5 项，供「均衡」口径参考；本轮价格口径＝官方实付价（未取得者用菜单价并标注）。",
+      "已对 3 个入选方案执行**最终官方复核**（含完整组成指纹，见各方案收据 stage=final）。",
+      "本次共发起 41 次真实官方计价请求（候选 41 项；成功 41；发起后失败 0；离线读取 0（其中未发起 0）；缓存命中 0；因预算/止损未发起 0；重试 0）。　注：**未发起不等于失败**——离线夹具与预算止损都未发起过请求。"
+    ]
+  }
+}

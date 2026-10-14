@@ -11,3 +11,11 @@ fixtures/** -text -diff
 *.gif binary
 *.ico binary
 *.zip binary
+
+# ── 人工审核留档：同样禁止行尾转换（须置于 `*` 之后——gitattributes 是「最后匹配者胜」）──
+# 这几份 CSV 与交付包 human-review/ 中的同名文件**应为同一份内容**
+# （见 docs/human-review/README.md 的「文件身份对照」）。它们原本是 CRLF；若被归一成 LF，
+# 仓库件与包内件就产生字节差异，"仓库内可复核包内结论"这一主张会平添无谓偏差。
+# ⚠️ 顺序要点：本规则必须写在 `* text=auto eol=lf` 之**后**，否则会被那条通配规则覆盖而失效
+#   （2026-10-14 实测：写在其前时 git 仍报 "CRLF will be replaced by LF"，等于没生效）。
+docs/human-review/*.csv -text -diff
