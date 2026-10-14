@@ -66,9 +66,9 @@ const ALLOW_BY_BASENAME = [
     lift: '若日后改用不带该字样的列名，本条白名单即应删除。',
   },
   {
-    re: /^placeholders-check\.json$/,
+    re: /^.*placeholders?-check.*\.json$/i,
     patternIds: ['unverified-placeholder', 'tofill-placeholder', 'tbd', 'lorem', 'bad-timestamp'],
-    why: '**本检查器自身的机器可读报告**——按设计要引用它所检出的字符串（含白名单项的摘录）作为凭据。',
+    why: '**本检查器自身的机器可读报告**（无论文件名前缀与变体）——按设计要引用它所检出的字符串（含白名单项的摘录）作为凭据。',
     lift: '不需解除——除非报告改为不记录摘录。',
   },
   {
