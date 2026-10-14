@@ -44,12 +44,6 @@ const badTimestamps = (line) => (line.match(ISO_LIKE) ?? []).filter((m) => Numbe
  */
 const ALLOW = [
   {
-    file: 'workbuddy.md',
-    patternIds: ['tofill-placeholder'],
-    why: '该文件要求填入「真实 WorkBuddy 会话导出」，**内容只能由主君提供**，不得由 AI 编造。',
-    lift: '主君导出真实会话记录并替换后，本条白名单即应删除。',
-  },
-  {
     file: 'scripts/review-samples.ts',
     patternIds: ['tofill-placeholder'],
     why: '此处是该字样是**待填样本表的列名常量**（表头），属设计而非文档欠债——人填表全靠这些列名。',
@@ -70,12 +64,6 @@ const ALLOW_BY_BASENAME = [
     patternIds: ['unverified-placeholder', 'tofill-placeholder', 'tbd', 'lorem', 'bad-timestamp'],
     why: '**本检查器自身的机器可读报告**（无论文件名前缀与变体）——按设计要引用它所检出的字符串（含白名单项的摘录）作为凭据。',
     lift: '不需解除——除非报告改为不记录摘录。',
-  },
-  {
-    re: /^workbuddy\.md$/,
-    patternIds: ['tofill-placeholder'],
-    why: '该文件要求填入**真实 WorkBuddy 会话导出**，内容只能由主君提供（不得由 AI 编造）；包内无 `.git`，路径白名单不生效故按文件名放行。',
-    lift: '主君导出真实会话记录并替换后，本条白名单即应删除。',
   },
   {
     re: /^review-samples\.ts$/,
