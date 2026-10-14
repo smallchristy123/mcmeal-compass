@@ -72,6 +72,12 @@ const ALLOW_BY_BASENAME = [
     lift: '不需解除——除非报告改为不记录摘录。',
   },
   {
+    re: /^workbuddy\.md$/,
+    patternIds: ['tofill-placeholder'],
+    why: '该文件要求填入**真实 WorkBuddy 会话导出**，内容只能由主君提供（不得由 AI 编造）；包内无 `.git`，路径白名单不生效故按文件名放行。',
+    lift: '主君导出真实会话记录并替换后，本条白名单即应删除。',
+  },
+  {
     re: /^review-samples\.ts$/,
     patternIds: ['tofill-placeholder'],
     why: '待填样本表的**列名常量**所在源码（随内层源码包分发，且包内无 `.git` 故路径白名单不生效）。',
