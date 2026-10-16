@@ -32,8 +32,10 @@ import {
   hashResponse,
   requestOf,
   basketOf,
+  receiptCompositionOf,
   type PriceAttempt,
   type Pricer,
+  type PriceReceipt,
   type PriceRequest,
 } from './pricing.ts';
 import { freshnessOf, localIsoNow } from './freshness.ts';
@@ -47,6 +49,8 @@ interface CliOptions {
   variants: Record<string, string>;
   /** 显式指定的**套餐内替换**（轮次名/选项名，计划书 §5.3.6） */
   swaps: { round: string; choice: string }[];
+  /** 参数错误（**fail-closed**：非空即不执行，打印用法并以码 2 退出） */
+  errors: string[];
   store?: string;
   city?: string;
   keyword?: string;
@@ -69,6 +73,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
     offline: false,
     variants: {},
     swaps: [],
+    errors: [],
     top: 15,
     sort: 'kcal',
     json: false,
@@ -89,14 +94,26 @@ function parseArgs(argv: readonly string[]): CliOptions {
         break;
       }
       case '--swap': {
-        // 形如「轮次=选项」；轮次可为 id、轮次名，或「名称#序号」（同名轮次）
-        const pair = next() ?? '';
-        const idx = pair.indexOf('=');
-        if (idx > 0) {
-          const round = pair.slice(0, idx).trim();
-          const choice = pair.slice(idx + 1).trim();
-          if (round.length > 0 && choice.length > 0) opts.swaps.push({ round, choice });
+        // 形如「轮次=选项」；轮次可为 id、轮次名，或「名称#序号」（同名轮次）。
+        // ⚠️ 格式不对一律记错并 **fail-closed**（复评 P2）：以前静默丢弃，与
+        // 「生效与未生效都要说清」的自定规则相悖。
+        const raw = next();
+        if (raw === undefined) {
+          opts.errors.push('--swap 缺少取值；正确写法：--swap "轮次=选项"（例：--swap "选择套餐内饮料=无糖可口可乐中杯"）');
+          break;
         }
+        const eq = raw.indexOf('=');
+        if (eq <= 0) {
+          opts.errors.push(`--swap 取值格式不对：「${raw}」；应为「轮次=选项」`);
+          break;
+        }
+        const round = raw.slice(0, eq).trim();
+        const choice = raw.slice(eq + 1).trim();
+        if (round.length === 0 || choice.length === 0) {
+          opts.errors.push(`--swap 的轮次或选项为空：「${raw}」；两侧都不能为空`);
+          break;
+        }
+        opts.swaps.push({ round, choice });
         break;
       }
       case '--store': opts.store = next(); break;
@@ -252,7 +269,7 @@ async function loadFromFixtures(): Promise<Sourced> {
         durationMs: 0,
         channel: 'offline',
         stage: request?.stage ?? 'initial',
-        ...(request ? { requestFingerprint: request.fingerprint } : {}),
+        ...(request ? receiptCompositionOf(request) : {}),
       },
     }),
     modeLabel: `离线夹具（无需 Token · 快照 ${b.snapshotId}）`,
@@ -344,14 +361,22 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
       argsSummary: buildArgsSummary(req.items),
       at: new Date().toISOString(),
       stage: req.stage,
-      requestFingerprint: req.fingerprint,
+      ...receiptCompositionOf(req),
     };
     try {
       const p = await client.calculatePrice({
         storeCode: storeCode!,
         orderType: 1,
         beType: 1,
-        items: req.items.map((l) => ({ productCode: l.productCode, quantity: l.quantity })),
+        // ⚠️ 必须带上 roundList：套餐的**实际组成**要真的发出去，
+        // 否则「替换后价格重算」无从谈起（复评 P1）。
+        items: req.items.map((l) => ({
+          productCode: l.productCode,
+          quantity: l.quantity,
+          ...(l.roundList === undefined || l.roundList.length === 0
+            ? {}
+            : { roundList: l.roundList }),
+        })),
       });
       const attempt: PriceAttempt = {
         quote: p,
@@ -567,6 +592,15 @@ async function main(): Promise<void> {
   }
   const opts = parseArgs(argv);
 
+  // 参数错误一律 **fail-closed**（复评 P2）：不静默吞掉、不"当作没给"，打印用法并非零退出。
+  if (opts.errors.length > 0) {
+    process.stderr.write(`\n[参数错误] 共 ${opts.errors.length} 处：\n`);
+    for (const e of opts.errors) process.stderr.write(`  · ${e}\n`);
+    process.stderr.write(`${USAGE}\n`);
+    process.exitCode = 2;
+    return;
+  }
+
   let src: Sourced;
   try {
     src = opts.offline ? await loadFromFixtures() : await loadFromMcp(opts);
@@ -650,9 +684,13 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
           : p.priced.priceSource === 'official-unverified'
             ? '（初次报价；最终复核未成功——未核实，不代表当前实付）'
             : '（菜单价，未核实实付）';
+      // 替换过的方案：若官方计价被拒（服务端不接受该组成），必须**明说价差没算进去**，
+      // 否则用户会以为"菜单价里已含替换加价"（复评 P1 的整改要求之一）。
+      const subNote = substitutionPriceNote(p.priced.receipt);
       L.push(
         `  实付    ${p.priced.effectivePrice === null ? '—' : formatCents(p.priced.effectivePrice)}` +
-          srcLabel,
+          srcLabel +
+          subNote,
       );
       const fmt = (v: number | null, u: string, complete = true) =>
         v === null ? '—' : `${complete ? '' : '≥'}${v}${u}`;
@@ -717,6 +755,22 @@ export function freshnessReport(src: Sourced): {
       price: freshnessOf(src.capturedAtByKind.price, 'price', opts),
     },
   };
+}
+
+/**
+ * 替换方案的**价格诚实提示**（复评 P1 整改要求之一）。
+ *
+ * 判据取自收据本身，不看文案：
+ *   · `argsSummary` 含 `roundList=` ⇒ 替换后的组成**确实送进了**官方计价请求；
+ *   · 同时 `ok === false` ⇒ 服务端拒绝了该组成（如 60006）。
+ * 此时展示的价格**不含替换项价差**，必须当场说明——否则用户会以为菜单价里已经算了加价。
+ */
+function substitutionPriceNote(receipt: PriceReceipt | undefined): string {
+  if (!receipt) return '';
+  if (!receipt.argsSummary.includes('roundList=')) return '';
+  if (receipt.ok) return '';
+  const code = receipt.businessCode ?? receipt.errorCode ?? '未知';
+  return `；⚠️ 替换后的组成已送官方计价但被拒（${code}）——**此价不含替换项价差**，请以门店结算为准`;
 }
 
 /**
@@ -868,6 +922,7 @@ export async function runOfflineForTest(args: Partial<CliOptions> = {}): Promise
     offline: true,
     variants: {},
     swaps: [],
+    errors: [],
     top: 15,
     sort: 'kcal',
     json: false,

@@ -25,10 +25,25 @@ import type { AnalyzedItem } from './analyze.ts';
 import type { PriceResult } from './schema.ts';
 import { toYuan, type Cents } from './money.ts';
 
-/** 一条报价行（官方契约：**productCode** + quantity） */
+/**
+ * 套餐子项的一轮（官方 `calculate-price` 的 `roundList` 元素）。
+ *
+ * ⚠️ 实测要点（2026-10-16，见 `docs/DECISION_NOTES.md`「10-16 追加 · O9」）：
+ *   · `round` 必须传**轮次 id 的字符串形式**；传轮次**名**会被服务端拒为 `BUSINESS_FAILURE code=500`；
+ *   · 带上默认组成与不带时**报价相同**（5050）；换成 +¥2 的选项则为 **5250**，−¥0.5 则为 **5000**。
+ *     故「补上实际组成」既不改动既有结果，又让替换后的价格**真的随之变化**。
+ */
+export interface RoundLine {
+  round: string;
+  comboItemList: { code: string; quantity: number }[];
+}
+
+/** 一条报价行（官方契约：**productCode** + quantity；套餐行可带 `roundList` 表达实际组成） */
 export interface PriceLine {
   productCode: string;
   quantity: number;
+  /** 套餐顶层行的**实际组成**——不给则官方按默认组成计价 */
+  roundList?: readonly RoundLine[];
 }
 
 /** 报价阶段：初次确认 / 最终复核 */
@@ -50,12 +65,25 @@ export type ReceiptChannel = 'live' | 'cache' | 'offline' | 'not-attempted';
  * 收据上却写着 `A×1`。现在：完整清单、组成指纹、报价阶段三者一起进入请求、收据与缓存标识。
  */
 export interface PriceRequest {
-  /** 报价对象（套餐按官方契约**整体报价**，不盲目拆成单品相加） */
+  /** 报价对象（套餐按其自身码**整体报价**，不拆成单品相加；但**带上实际组成**，见 `roundList`） */
   items: readonly PriceLine[];
-  /** 实际组成（若与 items 不同，例如套餐选了非默认组件）——留痕与指纹用 */
+  /** **期望组成**（来自结构化组件）——留痕用，与「实发载荷」分开记录，便于逐项对照 */
   composition?: readonly PriceLine[];
-  /** 组成指纹：items + composition 规范化后取哈希；进缓存键与收据 */
+  /**
+   * ⚠️ 语义已收窄（v3.7.1）：**等于 `payloadFingerprint`**（实发载荷指纹）。
+   * 保留旧名仅为兼容既有调用方；新代码请优先读下面两个显式字段。
+   */
   fingerprint: string;
+  /**
+   * **实发载荷**的指纹（`items` ＋ `roundList`）。
+   *
+   * 为什么要与「期望组成」拆开：v3.7.0 曾把组成算进指纹、却**没把组成发进请求**，
+   * 于是出现「指纹是组成专属的、报价却不是组成专属的」这一审计错位（复评 P1）。
+   * 现在二者各记各的，任何一个变了都能一眼看出是**哪一边**变了。
+   */
+  payloadFingerprint: string;
+  /** **期望组成**的指纹（由组件规范化而来）——与 `payloadFingerprint` 对照即知是否真的送出去了 */
+  desiredCompositionFingerprint: string;
   stage: PriceStage;
 }
 
@@ -84,8 +112,42 @@ export interface PriceReceipt {
   channel?: ReceiptChannel;
   /** 报价阶段 */
   stage?: PriceStage;
-  /** 组成指纹（与缓存标识一致，可交叉核对"这个价对应哪份组成"） */
+  /** **实发载荷**的指纹（items ＋ roundList）——与缓存标识一致 */
   requestFingerprint?: string;
+  /** **实发载荷**的指纹（显式字段；与 `requestFingerprint` 同值，便于对照阅读） */
+  payloadFingerprint?: string;
+  /** **期望组成**的指纹——与 `payloadFingerprint` 并置，即可看出"想换的"与"真发出去的"是否一致 */
+  desiredCompositionFingerprint?: string;
+  /**
+   * **期望组成的人可读记录**（如 `1:511781 ; 2:4810 ; 3:3100`）。
+   * 与 `argsSummary`（实发载荷）并置，是复评 P1 要求的三件套之一：
+   * **期望组成 / 实际发送载荷 / 响应核对结果**。
+   */
+  desiredComposition?: string;
+}
+
+/**
+ * 收据里的「**期望组成 / 实发载荷 / 载荷指纹**」三件套——统一构造，避免逐个写入点漏写。
+ *
+ * 复评 P1 明确要求：收据必须能同时回答三个问题——
+ *   ① 我**想**要什么组成？（`desiredComposition`，来自组件）
+ *   ② 我**实际发给服务端**的是什么？（收据的 `argsSummary`，来自 `items`＋`roundList`）
+ *   ③ 服务端返回的核对结果？（既有 `ok`／报价对象核对字段）
+ * 三者并置，任何一侧「没跟上」都能一眼看出来。
+ */
+export function receiptCompositionOf(request: PriceRequest): Pick<
+  PriceReceipt,
+  'requestFingerprint' | 'payloadFingerprint' | 'desiredCompositionFingerprint' | 'desiredComposition'
+> {
+  const comp = request.composition ?? [];
+  return {
+    requestFingerprint: request.fingerprint,
+    payloadFingerprint: request.payloadFingerprint,
+    desiredCompositionFingerprint: request.desiredCompositionFingerprint,
+    ...(comp.length > 0
+      ? { desiredComposition: comp.map((l) => `${l.productCode}×${l.quantity}`).join(' ; ') }
+      : {}),
+  };
 }
 
 /**
@@ -141,9 +203,17 @@ export interface PriceAttempt {
 /** 计价器：给定候选（与可选的完整报价请求），返回报价结果与收据 */
 export type Pricer = (item: AnalyzedItem, request?: PriceRequest) => Promise<PriceAttempt>;
 
-/** 便于测试与调用方构造一个"成功收据" */
+/** 便于测试与调用方构造一个"成功收据"；**逐字反映实发载荷**（含套餐组成） */
 export function buildArgsSummary(items: readonly PriceLine[]): string {
-  return `items=[${items.map((i) => `${i.productCode}×${i.quantity}`).join(',')}]`;
+  const lines = items.map((i) => `${i.productCode}×${i.quantity}`).join(',');
+  const rounds = items
+    .filter((i) => (i.roundList?.length ?? 0) > 0)
+    .flatMap((i) =>
+      (i.roundList ?? []).map(
+        (r) => `${r.round}:${r.comboItemList.map((c) => `${c.code}×${c.quantity}`).join('+')}`,
+      ),
+    );
+  return rounds.length > 0 ? `items=[${lines}] roundList=[${rounds.join(' ; ')}]` : `items=[${lines}]`;
 }
 
 export function hashResponse(payload: unknown): string {
@@ -167,12 +237,54 @@ export function fingerprintOf(items: readonly PriceLine[], composition?: readonl
   });
 }
 
-/** 默认报价对象：**按官方契约整体报价**（套餐不拆件），单件即自身 */
+/** 默认报价对象：按其自身码整体报价（套餐不拆件相加），**并带上实际组成** */
 export function basketOf(item: AnalyzedItem): PriceLine[] {
-  return [{ productCode: item.code, quantity: 1 }];
+  const roundList = roundListOf(item);
+  return [
+    {
+      productCode: item.code,
+      quantity: 1,
+      ...(roundList.length > 0 ? { roundList } : {}),
+    },
+  ];
 }
 
-/** 实际组成（来自结构化组件；仅用于指纹与留痕，不用于拆价） */
+/**
+ * 由结构化组件构造官方 `roundList`——**这是「组成变了，计价请求也跟着变」的落点**。
+ *
+ * `round` 取**轮次 id 的字符串**（实测：传名称会被服务端拒为 500，见 `RoundLine` 注释）。
+ * 组件缺 `roundId` 的旧数据一律跳过；此时退化为「不带组成」的请求（如实记录，不假装带了）。
+ */
+export function roundListOf(item: AnalyzedItem): RoundLine[] {
+  const comps = item.components ?? [];
+  if (comps.length === 0) return [];
+  /*
+   * ⚠️ 只在**组成与默认不同**时才带 `roundList`（2026-10-16 实测所定，见 DECISION_NOTES「O9」）：
+   *   · 未替换（全部为默认项）⇒ 不带 —— 与 v3.7.0 行为逐字一致，**既有官方核价覆盖面零回归**；
+   *   · 已替换（存在非默认项）⇒ 带上 —— 让「组成变了，计价请求也跟着变」真正成立。
+   *
+   * 为什么不一律带上：实测同一套餐，仅顶层码时报 ✓（如 12750），
+   * **带上 roundList 反被服务端以 `60006 商品已售罄或不可售` 拒绝**（BFF四宫格小食盘双人餐、
+   * 全明星双人分享餐八件套 两个套餐复现）。一律带上会**凭空损失官方核价覆盖面**，
+   * 那是拿覆盖面换一致性，得不偿失。
+   */
+  if (comps.every((c) => c.isDefault !== false)) return [];
+
+  const byRound = new Map<number, { code: string; quantity: number }[]>();
+  for (const c of comps) {
+    const roundId = c.roundId;
+    // 缺轮次 id（合成/历史/无详情）⇒ 跳过；**不猜一个 id 顶上**
+    if (roundId === undefined || !Number.isFinite(roundId)) continue;
+    const arr = byRound.get(roundId) ?? [];
+    arr.push({ code: c.choiceCode, quantity: c.quantity > 0 ? c.quantity : 1 });
+    byRound.set(roundId, arr);
+  }
+  return [...byRound.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([round, comboItemList]) => ({ round: String(round), comboItemList }));
+}
+
+/** 期望组成（来自结构化组件）——留痕用；**不用于拆价** */
 export function compositionOf(item: AnalyzedItem): PriceLine[] {
   return (item.components ?? []).map((c) => ({
     productCode: c.choiceCode,
@@ -182,7 +294,11 @@ export function compositionOf(item: AnalyzedItem): PriceLine[] {
 
 /**
  * 构造一次完整报价请求。
- * @param items 显式给定的报价对象；未给则用候选自身（套餐整体）
+ * @param items 显式给定的报价对象；未给则用候选自身（套餐整体 + 实际组成）
+ *
+ * 指纹**分两个**：`payloadFingerprint`（实发载荷）与 `desiredCompositionFingerprint`（期望组成）。
+ * `fingerprint` 保留为前者，缓存键据此判定（缓存必须按**实发载荷**区分，否则会把
+ * 「未带组成的报价」当成「带组成的报价」复用）。
  */
 export function requestOf(
   item: AnalyzedItem,
@@ -191,10 +307,14 @@ export function requestOf(
 ): PriceRequest {
   const lines = items && items.length > 0 ? items : basketOf(item);
   const composition = compositionOf(item);
+  const payloadFingerprint = fingerprintOf(lines);
+  const desiredCompositionFingerprint = fingerprintOf(composition);
   return {
     items: lines,
     ...(composition.length > 0 ? { composition } : {}),
-    fingerprint: fingerprintOf(lines, composition),
+    fingerprint: payloadFingerprint,
+    payloadFingerprint,
+    desiredCompositionFingerprint,
     stage,
   };
 }
@@ -318,7 +438,7 @@ export async function confirmPrices(
         durationMs: 0,
         channel: 'not-attempted',
         stage: 'initial',
-        requestFingerprint: request.fingerprint,
+        ...receiptCompositionOf(request),
       };
       return {
         item,
@@ -355,7 +475,7 @@ export async function confirmPrices(
           durationMs: 0,
           channel: 'live',
           stage: 'initial',
-          requestFingerprint: request.fingerprint,
+          ...receiptCompositionOf(request),
         },
       };
     }
@@ -601,7 +721,7 @@ export async function requoteFinal(
         durationMs: 0,
         channel: 'live',
         stage: 'final',
-        requestFingerprint: request.fingerprint,
+        ...receiptCompositionOf(request),
       },
       request,
       verified: false,
@@ -616,7 +736,7 @@ export async function requoteFinal(
     ...attempt.receipt,
     argsSummary: buildArgsSummary(request.items),
     stage: 'final',
-    requestFingerprint: request.fingerprint,
+    ...receiptCompositionOf(request),
   };
 
   const verdict = attempt.quote ? verifyQuoteBasket(request, attempt.quote) : null;

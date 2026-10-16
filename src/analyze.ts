@@ -43,12 +43,30 @@ export interface NutritionEvidence {
  * 也逃过了按名称的避糖检查。现在保留结构化组件，判定依据从「文案」回到「数据」。
  */
 export interface ItemComponent {
+  /**
+   * 所属轮次 id（官方 `calculate-price` 的 `roundList.round` 要的正是它）。
+   * **可选**：仅有结构化套餐详情时才有；合成的、历史的或缺详情的条目可能没有——
+   * 此时 `roundListOf()` 会跳过它并如实退化为「不带组成」的请求，**不假装带了**。
+   */
+  roundId?: number;
   /** 所属轮次（如「选择套餐内饮料」） */
   roundName: string;
   /** 选项编码（供计价/组成指纹使用） */
   choiceCode: string;
   /** 选项名（判定与展示用） */
   choiceName: string;
+  /**
+   * 该选项相对本轮默认项的**官方价差**（分；可为负；官方未给则为 null）。
+   * 保留它是为了两件事：① 组成变化时能自证「价格该差多少」；② 万一某轮次无法送进请求，
+   * 仍可给出**明示为估算**的价差推算，而不是默默按原价展示。
+   */
+  diffPrice?: Cents | null;
+  /**
+   * 该选项是否就是本轮的**默认项**。
+   * **可选**：仅有结构化详情时才有。计价层据此判断「组成是否与默认不同」——
+   * 只有非默认（即真的替换过）才把 `roundList` 送进官方请求（见 `pricing.ts::roundListOf`）。
+   */
+  isDefault?: boolean;
   /** 匹配到的官方营养名；未匹配为 null */
   nutritionName: string | null;
   /** 是否匹配到官方营养（false ⇒ 该组件成分**无法核实**） */
@@ -315,11 +333,14 @@ export function analyzeCombo(
     }
   }
 
-  // 结构化组件留存（评审 R2）：判定避糖 / 生成组成指纹都以此为准
+  // 结构化组件留存（评审 R2）：判定避糖 / 生成组成指纹 / **构造官方 roundList** 都以此为准
   const components: ItemComponent[] = d.components.map((c) => ({
+    roundId: c.roundId,
     roundName: c.roundName,
     choiceCode: c.choiceCode,
     choiceName: c.choiceName,
+    diffPrice: c.diffPrice,
+    isDefault: c.isDefault,
     nutritionName: c.match.nutrition?.productName ?? null,
     nutritionMatched: c.match.nutrition !== null,
     method: c.match.method,

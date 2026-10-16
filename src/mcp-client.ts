@@ -688,14 +688,28 @@ export class McpClient {
     storeCode: string;
     orderType: 1 | 2;
     beType: 1 | 2 | 5 | 6;
-    items: { productCode: string; quantity: number }[];
+    /**
+     * 顶层商品行。套餐行可带 `roundList`（官方「套餐子项」）表达**实际组成**——
+     * `round` 传**轮次 id 的字符串**（传轮次名会被服务端拒为 500，实测）。
+     */
+    items: {
+      productCode: string;
+      quantity: number;
+      roundList?: readonly { round: string; comboItemList: { code: string; quantity: number }[] }[];
+    }[];
     beCode?: string;
   }): Promise<PriceResult> {
     const args: Record<string, unknown> = {
       storeCode: params.storeCode,
       orderType: params.orderType,
       beType: params.beType,
-      items: params.items.map((i) => ({ productCode: i.productCode, quantity: i.quantity })),
+      // ⚠️ 逐字段重建时**必须带上 roundList**：v3.7.0 这里把组成丢了，
+      // 于是「替换后价格重算」只是空话（复评 P1）。
+      items: params.items.map((i) => ({
+        productCode: i.productCode,
+        quantity: i.quantity,
+        ...(i.roundList && i.roundList.length > 0 ? { roundList: i.roundList } : {}),
+      })),
     };
     if (params.beCode && params.beType !== 1) args['beCode'] = params.beCode;
     return toPriceResult(await this.callTool('calculate-price', args));

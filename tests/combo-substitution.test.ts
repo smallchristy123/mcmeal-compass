@@ -17,7 +17,7 @@ import { NutritionMatcher } from '../src/matching.ts';
 import { DEFAULT_ALIASES } from '../src/aliases.ts';
 import { analyzeMenu } from '../src/analyze.ts';
 import { resolveSubstitutions } from '../src/decompose.ts';
-import { renderReplacement } from '../src/cli.ts';
+import { renderReplacement, parseArgs } from '../src/cli.ts';
 
 const TARGET = '人气超值四件套随心选'; // 夹具套餐 9900004236：4 个轮次，饮料轮次名唯一
 const DRINK_ROUND = '选择套餐内饮料';
@@ -182,6 +182,46 @@ describe('替换请求 · 端到端（analyzeMenu）', () => {
       '该轮次应在多个套餐中生效（本店套餐共用同一套轮次命名）',
     );
     assert.equal(r.replacement!.rejected.length, 0, '生效过就不该再报"未生效"');
+  });
+});
+
+describe('--swap 参数解析 · **fail-closed**（复评 P2）', () => {
+  test('格式错误一律记错，不静默吞掉、也不产生替换请求', () => {
+    const bads: string[][] = [
+      ['--swap', '错误格式'], // 缺 =
+      ['--swap', '=值'], // 轮次为空
+      ['--swap', '轮次='], // 选项为空
+      ['--swap'], // 根本没给值
+      ['--swap', '   =   '], // 两侧都是空白
+    ];
+    for (const argv of bads) {
+      const o = parseArgs(argv);
+      assert.ok(o.errors.length > 0, `「${argv.join(' ')}」应记为参数错误`);
+      assert.equal(o.swaps.length, 0, `「${argv.join(' ')}」不得产生替换请求`);
+    }
+  });
+
+  test('合法写法正常入列；重复参数交由语义层如实提示（解析阶段不拦）', () => {
+    const o = parseArgs([
+      '--swap',
+      '选择套餐内饮料=无糖可口可乐中杯',
+      '--swap',
+      '小食#2=薄皮焦香V翅',
+      '--budget',
+      '35',
+    ]);
+    assert.equal(o.errors.length, 0);
+    assert.deepEqual(o.swaps, [
+      { round: '选择套餐内饮料', choice: '无糖可口可乐中杯' },
+      { round: '小食#2', choice: '薄皮焦香V翅' },
+    ]);
+    assert.equal(o.budget, 35);
+  });
+
+  test('未给 --swap 时无错（既有调用不受影响）', () => {
+    const o = parseArgs(['--offline', '--budget', '35']);
+    assert.equal(o.errors.length, 0);
+    assert.deepEqual(o.swaps, []);
   });
 });
 
