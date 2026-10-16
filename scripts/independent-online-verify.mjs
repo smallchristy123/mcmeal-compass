@@ -109,6 +109,14 @@ const PKG_VERSION = (() => {
   return 'unknown';
 })();
 
+/** `src/version.ts` 里由 `scripts/sync-version.mjs` 生成的版本常量（用于自校验两者一致） */
+const SRC_VERSION = (() => {
+  const p = join(SRC_ROOT, 'version.ts');
+  if (!existsSync(p)) return null;
+  const m = /VERSION\s*=\s*"([^"]+)"/.exec(readFileSync(p, 'utf8'));
+  return m ? m[1] : null;
+})();
+
 const client = new McpClient({
   url: ENDPOINT,
   token: token.value,
@@ -137,6 +145,12 @@ const out = {
   runId: `independent-online-verify-${startedAt}`,
   at: startedAt,
   scriptVersion: 'v3.6.4（P1 路径动态解析 + P2 UTF-8 字节数）',
+  /**
+   * 本次运行**对外报给服务端的客户端版本**（复评 v3.7.1 · P2）。
+   * 与 `package.json` 同源，故本文件可用来核对"运行路径确实用的是当前版本"，
+   * 而不是只改了一个 `package.json` 的数字。
+   */
+  clientVersion: PKG_VERSION,
   purpose:
     'v3.6.2 复评建议：低负载串行的独立认证调用 + 用独立数据重算 A/B/C/D 分布 + 原始响应/哈希/命令归档',
   endpoint: ENDPOINT,
@@ -351,6 +365,12 @@ out.selfChecks = [
     id: 'P2-bytes-differ-from-chars-on-cjk',
     pass: withRaw.some((c) => c.responseBytes !== c.responseChars),
     note: `含中文响应中「字节数 ≠ 字符数」的条数：${withRaw.filter((c) => c.responseBytes !== c.responseChars).length}/${withRaw.length}（证明二者口径确实不同）`,
+  },
+  {
+    // 复评 v3.7.1 · P2：版本身份必须**在运行路径上**生效，而不是只改了 package.json
+    id: 'P2-version-source-consistent',
+    pass: SRC_VERSION !== null && SRC_VERSION === PKG_VERSION,
+    note: `package.json=${PKG_VERSION}｜src/version.ts=${SRC_VERSION ?? '(未找到)'}｜本次对外报的 clientInfo.version=${PKG_VERSION}`,
   },
 ];
 out.evidenceHash = sha(JSON.stringify(calls));
