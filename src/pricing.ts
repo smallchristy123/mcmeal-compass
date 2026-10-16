@@ -168,6 +168,9 @@ export function receiptCompositionOf(request: PriceRequest): Pick<
  *     · 全部被选组件的价差都拿到了 → 用**调整后菜单价**（本来源），并标明不是官方实付；
  *     · 任一价差缺失 → **价格视为未知**（`effectivePrice=null`、`withinBudget=false`），不进预算内方案；
  *     · 官方明确「不可售」（如业务码 60006）→ 直接**移出可行集**（见 `PricedCandidate.unavailable`）。
+ *
+ * ⚠️ v3.7.3 复评 P2-2：第四态的触发条件由「价差合计 ≠ 0」修正为「**组成确有变化**」
+ *   （即存在 `isDefault === false` 的非默认项）——**±¥0 的非默认替换同样是替换**。
  */
 export type PriceSource =
   | 'official'
@@ -231,7 +234,13 @@ export interface PriceAttempt {
   receipt: PriceReceipt;
 }
 
-/** 计价器：给定候选（与可选的完整报价请求），返回报价结果与收据 */
+/**
+ * 计价器：给定候选（与可选的完整报价请求），返回报价结果与收据。
+ *
+ * ⚠️ **调用契约（v3.7.3 · 复评 P2-1）**：`Pricer` 是导出的，核心层**不假定**调用方
+ * 只会返回自洽结果。若实现返回 `receipt.ok === false` 却同时带 `quote`，
+ * 该 `quote` 一律**不被采纳**（只作诊断），并由 `normalizePriceAttempt` 生成明确诊断。
+ */
 export type Pricer = (item: AnalyzedItem, request?: PriceRequest) => Promise<PriceAttempt>;
 
 /** 便于测试与调用方构造一个"成功收据"；**逐字反映实发载荷**（含套餐组成） */
@@ -440,13 +449,64 @@ export function classifyPriceFailure(receipt: PriceReceipt): PriceFailureKind | 
   return 'unknown';
 }
 
-/** 「调整后菜单价」的推算结果 */
+/**
+ * 报价尝试的**规范化与不变量检查**（v3.7.3 · 复评 P2-1）。
+ *
+ * 不变量：**状态真值优先于载荷中碰巧存在的字段**——
+ * 一份 `receipt.ok === false` 的失败回执，**不得**同时被当作可采信的报价。
+ *
+ * 为什么要有这一件：`Pricer` 是**导出的调用契约**，核心层不能假定每个调用方
+ * 都构造不出「失败回执 + 残留报价」这种矛盾结果（内置 `McpClient` 在业务失败时通常抛错，
+ * 反而掩盖了这一理论暴露面）。此处把矛盾**显式化**：残留 `quote` 仍留在 `attempt.quote`
+ * 里**仅供诊断**，但 `confirmPrices` / `requoteFinal` 一律**先看 `receipt.ok`**，永不采纳它。
+ */
+export interface NormalizedPriceAttempt {
+  /** 规范化后的尝试（残留报价仍在 `quote`，**仅作诊断**） */
+  attempt: PriceAttempt;
+  /** 若发现 `receipt.ok === false && quote != null` 这一矛盾输入，给出明确诊断；否则为 undefined */
+  contradiction?: string;
+}
+
+/** 见 `NormalizedPriceAttempt`——**失败回执就是失败**，残留报价只作诊断，不得采纳为官方价。 */
+export function normalizePriceAttempt(attempt: PriceAttempt): NormalizedPriceAttempt {
+  const { receipt, quote } = attempt;
+  if (receipt.ok || quote === null || quote === undefined) return { attempt };
+  const why =
+    receipt.businessCode !== undefined
+      ? `业务码 ${receipt.businessCode}`
+      : (receipt.errorCode ?? '未给出错误码');
+  const shown =
+    quote.price === null || quote.price === undefined
+      ? '报价字段为 `null`'
+      : `报价字段为 ¥${toYuan(quote.price).toFixed(2)}`;
+  return {
+    attempt,
+    contradiction:
+      `**矛盾输入**：报价回执为**失败**（${why}${receipt.errorMessage === undefined ? '' : `：${receipt.errorMessage}`}）` +
+      `，却同时带有${shown}。按「状态真值优先于载荷中碰巧存在的字段」——` +
+      `**失败回执就是失败**，该残留报价**仅作诊断，不得采纳为官方价**。`,
+  };
+}
+
+/**
+ * 「调整后菜单价」的推算结果。
+ *
+ * ⚠️ v3.7.3 复评 P2-2：**「金额是否改变」与「组成是否改变」是两件事**，必须分开表达。
+ * 旧实现只有 `adjustment`，调用方便以「价差合计是否为 0」代替「组成是否变化」，
+ * 于是「小食 → 小杯玉米杯（±¥0）」这类**真实替换**被写成「菜单价（组成与默认一致）」，
+ * 价源也退回普通 `menu`——金额没错，**证据语义错了**。
+ */
 export interface AdjustedMenuPrice {
   /** 调整后菜单价（分） */
   cents: Cents;
-  /** 相加的替换价差合计（分）；0 表示组成与默认一致（金额即菜单价） */
+  /** 相加的替换价差合计（分）；**0 不等于「组成与默认一致」**（见 `compositionChanged`） */
   adjustment: Cents;
-  /** 人可读依据（如「菜单价 ＋ 无糖可口可乐中杯 ±¥0.00」） */
+  /**
+   * **组成是否真的变了**——**只由「是否存在 `isDefault === false` 的非默认项」决定**，
+   * 与价差数值无关。（±¥0 的非默认替换同样是替换。）
+   */
+  compositionChanged: boolean;
+  /** 人可读依据（如「菜单价 ＋ 小杯玉米杯 ±¥0.00」；无替换项时为「菜单价（组成与默认一致）」） */
   basis: string;
 }
 
@@ -455,29 +515,37 @@ export interface AdjustedMenuPrice {
  *
  * **只在每一处与默认不同的选项都拿到了价差时才给值**；任一缺失即返回 `null`
  * （`null` 的语义是「价格未知」，调用方**不得**退回原菜单价去过硬预算）。
- * 组成与默认一致（无替换）时返回金额即菜单价、`adjustment=0`。
+ * 组成与默认一致（无替换项）时返回金额即菜单价、`adjustment=0`、`compositionChanged=false`。
+ *
+ * ⚠️ v3.7.3 复评 P2-2：**±¥0 的非默认替换同样是替换**。
+ * 旧实现用「价差合计是否为 0」代替「组成是否变化」，于是「小食 → 小杯玉米杯（`diffPrice=0`）」
+ * 被写成「菜单价（组成与默认一致）」、价源退回普通 `menu`。金额（¥28）没算错，
+ * 但**证据语义错了**：官方计价失败时，用户无从看出一套**替换过、且可售性未确认**的组成。
+ * 现改为：**非默认项（含 ±¥0）一律列出**，`compositionChanged` 只由 `isDefault` 决定。
  */
 export function adjustedMenuPriceOf(item: AnalyzedItem): AdjustedMenuPrice | null {
   if (item.price === null || !Number.isFinite(item.price)) return null;
   const comps = item.components ?? [];
   let adjustment = 0;
+  let compositionChanged = false;
   const parts: string[] = [];
   const missing: string[] = [];
 
   for (const c of comps) {
     // 默认项：其相对默认的价差恒为 0（菜单价已含），无须价差数据
     if (c.isDefault === true) continue;
+    // 走到这里 ⇒ 这是一个**非默认项**：组成已变，**与价差是否为 0 无关**
+    compositionChanged = true;
     const qty = c.quantity > 0 ? c.quantity : 1;
     if (typeof c.diffPrice !== 'number' || !Number.isFinite(c.diffPrice)) {
       missing.push(`「${c.roundName} → ${c.choiceName}」`);
       continue;
     }
     adjustment += c.diffPrice * qty;
-    if (c.diffPrice !== 0) {
-      const sign = c.diffPrice > 0 ? '+' : '−';
-      const abs = (Math.abs(c.diffPrice) * qty) / 100;
-      parts.push(`${c.choiceName}${qty > 1 ? `×${qty}` : ''} ${sign}¥${abs.toFixed(2)}`);
-    }
+    // ±¥0 也要列出：它是「发生过替换」的证据，不能因为金额为零而隐去（复评 P2-2 要求 ②）
+    const sign = c.diffPrice > 0 ? '+' : c.diffPrice < 0 ? '−' : '±';
+    const abs = (Math.abs(c.diffPrice) * qty) / 100;
+    parts.push(`${c.choiceName}${qty > 1 ? `×${qty}` : ''} ${sign}¥${abs.toFixed(2)}`);
   }
 
   if (missing.length > 0) return null;
@@ -486,13 +554,21 @@ export function adjustedMenuPriceOf(item: AnalyzedItem): AdjustedMenuPrice | nul
   return {
     cents,
     adjustment: adjustment as Cents,
-    basis: parts.length === 0 ? '菜单价（组成与默认一致）' : `菜单价 ＋ ${parts.join(' ＋ ')}`,
+    compositionChanged,
+    basis: compositionChanged ? `菜单价 ＋ ${parts.join(' ＋ ')}` : '菜单价（组成与默认一致）',
   };
 }
 
-/** 推算值的价源：无价差（金额＝菜单价）时沿用 `menu`，有条目价差时用第四态 */
+/**
+ * 推算值的价源：
+ *   · **组成有变**（含 ±¥0 的非默认替换）⇒ `menu-adjusted-unverified`——
+ *     官方实付未取得，且该替换组成的**可售性也未确认**；
+ *   · **组成未变**（金额即菜单价）⇒ 沿用 `menu`。
+ *
+ * **不由价差合计是否为 0 决定**（v3.7.3 复评 P2-2 要求 ③）。
+ */
 function sourceOfAdjusted(adj: AdjustedMenuPrice): PriceSource {
-  return adj.adjustment === 0 ? 'menu' : 'menu-adjusted-unverified';
+  return adj.compositionChanged ? 'menu-adjusted-unverified' : 'menu';
 }
 
 export interface ConfirmOptions {
@@ -561,8 +637,9 @@ export async function confirmPrices(
       // 未发起 ≠ 价格＝菜单价：若该候选带替换，数字必须按**调整后菜单价**给，否则就是用偏低值过闸门
       const adj = fallback ? adjustedMenuPriceOf(item) : null;
       const skippedNotes = [`未发起官方计价（${reason}），如展示须标「未核实实付」`];
-      if (adj && adj.adjustment !== 0) {
-        skippedNotes.push(`该候选含替换项，金额按**调整后菜单价**推算（${adj.basis}）——**不是官方实付，也未确认可售**`);
+      // ⚠️ 判据按**组成**（`compositionChanged`）而非按价差是否为 0（v3.7.3 复评 P2-2）
+      if (adj && adj.compositionChanged) {
+        skippedNotes.push(`该候选含替换项，金额按**调整后菜单价**推算（${adj.basis}）——**不是官方实付，也未确认该替换组成可售**`);
       } else if (adj) {
         skippedNotes.push('金额为菜单价（无替换项，与调整后菜单价同值）——**未核实实付**');
       } else {
@@ -625,6 +702,11 @@ export async function confirmPrices(
     let verified = false;
     let unavailable = false;
 
+    // ⚠️ v3.7.3 · 复评 P2-1：先做**不变量检查**——「失败回执 + 残留报价」是矛盾输入，
+    //    必须显式诊断，且其 `quote` 字段**绝不**被采纳（残留报价只作诊断）。
+    const { contradiction } = normalizePriceAttempt(attempt);
+    if (contradiction !== undefined) itemNotes.push(contradiction);
+
     // 报价对象核对（评审 R9）：拿不到逐项清单 / 商品或数量不符 ⇒ 不能算"已核实"
     const verdict = attempt.quote ? verifyQuoteBasket(request, attempt.quote) : null;
     const pricePresent = Boolean(attempt.quote && attempt.quote.price !== null);
@@ -635,9 +717,13 @@ export async function confirmPrices(
     const adj = fallback ? adjustedMenuPriceOf(item) : null;
     const failureKind = classifyPriceFailure(attempt.receipt);
 
-    // ⚠️ 只有「官方给出价格 **且** 报价对象核对得上」才采纳为官方价；
-    //    合法的 0 元报价照用（0 元 ≠ 没报价），但同样要过核对这一关。
-    if (pricePresent && basketOk) {
+    // ⚠️ 官方价的**必要条件（三者缺一不可）**：
+    //    ① `receipt.ok === true`——**失败回执就是失败**，即便它残留了报价字段（v3.7.3 复评 P2-1）；
+    //    ② 官方给出价格（合法的 0 元照用：0 元 ≠ 没报价）；
+    //    ③ 报价对象核对得上。
+    const adoptOfficial = attempt.receipt.ok && pricePresent && basketOk;
+
+    if (adoptOfficial) {
       effectivePrice = attempt.quote!.price as Cents;
       priceSource = 'official';
       verified = true;
@@ -656,8 +742,8 @@ export async function confirmPrices(
         `官方判定该组成**不可售**（${attempt.receipt.businessCode === undefined ? '' : `业务码 ${attempt.receipt.businessCode}：`}` +
           `${attempt.receipt.errorMessage ?? '无说明'}）——**移出可行集**：既不作方案，也不作「最接近预算」的备选`,
       );
-    } else if (pricePresent) {
-      // 有价格字段，但报价对象核对不上 → **拒绝采纳**，不得据此说"已核实"
+    } else if (attempt.receipt.ok && pricePresent) {
+      // 回执**成功**、也给了价格字段，但报价对象核对不上 → **拒绝采纳**，不得据此说"已核实"
       itemNotes.push(
         `官方响应**未通过报价对象核对**（${verdict?.detail ?? '无明细'}）：不采纳该金额`,
       );
@@ -665,22 +751,29 @@ export async function confirmPrices(
         effectivePrice = adj.cents;
         priceSource = sourceOfAdjusted(adj);
         priceBasis = adj.basis;
-        itemNotes.push(`金额改按**调整后菜单价**推算（${adj.basis}）——**未核实实付**，亦**未确认可售**`);
+        itemNotes.push(
+          adj.compositionChanged
+            ? `金额改按**调整后菜单价**推算（${adj.basis}）——**不是官方实付，也未确认该替换组成可售**`
+            : '金额改按**菜单价**计（无替换项）——**未核实实付**',
+        );
       } else {
         itemNotes.push('调整后菜单价无法推算（替换价差不全）⇒ **价格未知**，不参与预算判定');
       }
     } else if (adj) {
+      // 走到这里含两种情形：① 失败回执（含残留报价——其报价已被上面的不变量检查否掉）；
+      // ② 回执成功但官方没给价格字段（`price === null`）。
       effectivePrice = adj.cents;
       priceSource = sourceOfAdjusted(adj);
       priceBasis = adj.basis;
-      if (adj.adjustment === 0) {
+      if (adj.compositionChanged) {
+        // 组成有变（**含 ±¥0 的非默认替换**）⇒ 官方实付未取得，且该替换组成的可售性未确认
         itemNotes.push(
-          `官方计价未取得（${attempt.receipt.errorCode ?? '未知原因'}），暂以菜单价计——**未核实实付**`,
+          `官方计价未取得（${attempt.receipt.errorCode ?? '未知原因'}），金额按**调整后菜单价**推算（${adj.basis}）` +
+            `——**不是官方实付，也未确认该替换组成可售**，且**已把已知价差计入预算判定**`,
         );
       } else {
         itemNotes.push(
-          `官方计价未取得（${attempt.receipt.errorCode ?? '未知原因'}），金额按**调整后菜单价**推算（${adj.basis}）` +
-            `——**不是官方实付，也未确认可售**，且**已把已知价差计入预算判定**`,
+          `官方计价未取得（${attempt.receipt.errorCode ?? '未知原因'}），暂以菜单价计——**未核实实付**`,
         );
       }
     } else {
@@ -941,10 +1034,13 @@ export async function requoteFinal(
     ...receiptCompositionOf(request),
   };
 
+  // ⚠️ v3.7.3 · 复评 P2-1：复核价的采纳同样要过 `receipt.ok` 这一关——
+  //    「失败回执 + 残留报价」不得被当成本次复核的实付价（与 `confirmPrices` 同一不变量）。
+  const { contradiction } = normalizePriceAttempt(attempt);
   const verdict = attempt.quote ? verifyQuoteBasket(request, attempt.quote) : null;
   const basketOk = verdict?.status === 'matched';
   const pricePresent = Boolean(attempt.quote && attempt.quote.price !== null);
-  const verified = pricePresent && basketOk;
+  const verified = attempt.receipt.ok && pricePresent && basketOk;
   const after: Cents | null = verified ? (attempt.quote!.price as Cents) : null;
   const before = candidate.effectivePrice;
   const consistent = before === null || after === null ? null : before === after;
@@ -956,15 +1052,19 @@ export async function requoteFinal(
     verified,
     quote: attempt.quote,
     consistent,
-    note: !pricePresent
-      ? '复核未成功，价格来源降级为菜单价并须标注「未核实」'
-      : !basketOk
-        ? `复核响应未通过报价对象核对（${verdict?.detail ?? '无明细'}）——结果标为「未核实」`
-        : consistent === true
-          ? `复核一致（¥${toYuan(after as Cents).toFixed(2)}）`
-          : consistent === false
-            ? `复核与初次报价不同（¥${before === null ? '—' : toYuan(before).toFixed(2)} → ¥${after === null ? '—' : toYuan(after).toFixed(2)}），以复核价为准`
-            : '复核成功，但初次报价缺失，无法比较',
+    note: !attempt.receipt.ok
+      ? `${contradiction === undefined ? '' : `${contradiction} `}` +
+        `复核请求**失败**（${attempt.receipt.businessCode === undefined ? (attempt.receipt.errorCode ?? '未知原因') : `业务码 ${attempt.receipt.businessCode}`}）` +
+        `——本次复核**未取得可信价格**，结果标为「未核实」`
+      : !pricePresent
+        ? '复核未成功，价格来源降级为菜单价并须标注「未核实」'
+        : !basketOk
+          ? `复核响应未通过报价对象核对（${verdict?.detail ?? '无明细'}）——结果标为「未核实」`
+          : consistent === true
+            ? `复核一致（¥${toYuan(after as Cents).toFixed(2)}）`
+            : consistent === false
+              ? `复核与初次报价不同（¥${before === null ? '—' : toYuan(before).toFixed(2)} → ¥${after === null ? '—' : toYuan(after).toFixed(2)}），以复核价为准`
+              : '复核成功，但初次报价缺失，无法比较',
   };
 }
 

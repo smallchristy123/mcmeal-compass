@@ -716,3 +716,48 @@ v3.7.1 的 `tests/substitution-pricing.test.ts` 把「小杯玉米杯（`4437`�
 3. 本版全部证据（含两轮在线复核）**用权威脚本重跑**。
 
 **性质**：`resolved`（本版已修并加断言）；但前两版的历史事实**保留不改写法**。
+
+### 八、v3.7.2 复评（有条件通过）→ v3.7.3 最小补丁
+
+**复评结论**：v3.7.1 原 P1 已修实；新增两条 P2 与两条 P3，故**不给无保留签收**。
+**总原则（复评原话）**：**状态真值优先于载荷中碰巧存在的字段；组成真值独立于价差数值。**
+
+#### P2-1 失败回执可被同对象里的报价字段覆盖（fail-open）
+
+- **病灶**：`confirmPrices` 的官方价采纳条件原为 `pricePresent && basketOk`，
+  **漏了 `receipt.ok === true`**；`requoteFinal` 的 `verified` 同病。
+  于是「`receipt.ok=false` + 业务码 60006 + 一份与请求核对得上的残留 `quote`」
+  被判成 `official / verified=true / excluded=[]`。
+- **修法**：① 采纳条件改为 **`receipt.ok && pricePresent && basketOk`**（三者缺一不可）；
+  ② 失败先分流，残留 `quote` **只作诊断**；
+  ③ 新增 `normalizePriceAttempt()`——遇 `ok=false && quote!=null` 生成**明确诊断**，
+  并写进该候选的 `notes`；
+  ④ 新增矩阵测试：`60006 / TIMEOUT / RATE_LIMITED × 无残留报价 / 残留且篮子匹配 / 残留且篮子不匹配`。
+
+#### P2-2 非默认 ±¥0 替换被误写成「组成与默认一致」
+
+- **病灶**：`adjustedMenuPriceOf` 用「价差合计是否为 0」代替「组成是否变化」，
+  且 `sourceOfAdjusted` 同样以 `adjustment === 0` 判断——于是「小食#1 → 小杯玉米杯（`diffPrice=0`）」
+  被写成「菜单价（组成与默认一致）」、价源退回普通 `menu`。**金额（¥28）没错，证据语义错了**。
+- **修法**：① `AdjustedMenuPrice` 新增 **`compositionChanged`**，**只由 `isDefault === false` 决定**；
+  ② **±¥0 的非默认项也列入 `basis`**（写作 `小杯玉米杯 ±¥0.00`）；
+  ③ 价源改由 `compositionChanged` 决定 ⇒ 只要组成变过且官方实付未取得，一律 `menu-adjusted-unverified`；
+  ④ 降级说明统一写「**不是官方实付，也未确认该替换组成可售**」。
+
+#### P3 文档
+
+- P3-1：`REVIEW-GUIDE` 里手写的「134 行逐项校验」删除，改为**指向 manifest 的 `hashedPayloadFileCount`**
+  （手写常数 = 会过期的断言）。
+- P3-2：`scripts/source-identity.mjs` 里 `online-evidence/history-secrets-scan.json`
+  → **`source/history-secrets-scan.json`**；并顺手去掉该脚本中硬写的 `v3.7.2` 包名（改读 `package.json`）。
+  **新增打包门槛**：文档中出现的**包根相对路径必须存在**，否则中止打包。
+
+#### 反例前后结果（同一探针，`scripts/v373-edge-probe.ts`）
+
+| 反例 | 前（v3.7.2） | 后（v3.7.3） |
+|---|---|---|
+| 60006 + 残留匹配报价 | `priceSource=official` · `verified=true` · `excluded=[]` | 移出可行集（`kind=unavailable`）· 无 `official` |
+| TIMEOUT + 残留匹配报价 | `priceSource=official` · `effectivePrice=2800`（残留报价被采纳） | `menu-adjusted-unverified` · `effectivePrice=3000`（推算价）· 诊断留痕 |
+| ±¥0 非默认替换 | `basis=菜单价（组成与默认一致）` · 无 `compositionChanged` | `compositionChanged=true` · `basis=菜单价 ＋ 小杯玉米杯 ±¥0.00` |
+
+**性质**：`resolved`（两条 P2 + 两条 P3 均已修，并各自带回归测试与前后对照）。

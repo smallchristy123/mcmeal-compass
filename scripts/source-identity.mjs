@@ -29,6 +29,13 @@ const argOf = (name, fallback) => {
 const OUT = resolve(argOf('--out', join(ROOT, 'work', 'source-identity')));
 const REF = argOf('--ref', 'HEAD');
 
+/**
+ * 版本号**从唯一版本源读取**（package.json → src/version.ts，由 `sync-version.mjs` 保证一致）。
+ * 此处曾硬写 `mcmeal-compass-src-v3.7.2.zip`——那正是本项目的老病：
+ * 文档里的版本/路径与实况背离。v3.7.3 复评 P3-2 一并修正。
+ */
+const VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
+
 const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 const gitBuf = (...args) => execFileSync('git', args, { cwd: ROOT, maxBuffer: 256 * 1024 * 1024 });
 
@@ -96,8 +103,8 @@ tree-listing.tsv               SHA-256  ${listingSha}
 2) git rev-parse HEAD                 # 应等于 ${commit}
 3) git rev-parse HEAD^{tree}          # 应等于 ${tree}
 4) git rev-list --count HEAD          # 应等于 ${commitCount}
-5) 解压 mcmeal-compass-src-v3.7.2.zip 后，逐文件核对 SHA-256 与 tree-listing.tsv 的第四列；
-6) 历史凭据扫描：见 online-evidence/history-secrets-scan.json
+5) 解压 mcmeal-compass-src-v${VERSION}.zip 后，逐文件核对 SHA-256 与 tree-listing.tsv 的第四列；
+6) 历史凭据扫描：见 source/history-secrets-scan.json
    （扫描**输入**为该 bundle 克隆出的仓库，故 history.scanned=true 可复算）
 
 ⚠️ 说明：commit 与提交数为**构建端记录**；本材料的作用是让第三方能**独立复算**，
