@@ -21,8 +21,11 @@ import { NutritionMatcher, assignConfidence, KEY_NUTRIENTS } from './matching.ts
 import { checkEnergyConsistency } from './validate.ts';
 import {
   decomposeMeal,
+  resolveSubstitutions,
   type NutritionTotals,
+  type SubstitutionFailKind,
   type SubstitutionRequest,
+  type SubstitutionSpec,
 } from './decompose.ts';
 
 /** 结论的来源说明 */
@@ -393,9 +396,34 @@ export interface MenuAnalysisSummary {
   dataAnomalies: number;
 }
 
+/**
+ * 替换请求的执行报告（用户传了 `substitutions` 才有）。
+ *
+ * 为什么要**聚合**而不是逐条列出：同一条替换会拿去**逐个套餐**尝试（如「把饮料换成无糖可乐」），
+ * 命中的套餐可能很多、不含该轮次的套餐更多——逐条上报会淹没真正有用的信息。
+ * 故此处只报三样：**生效了几处**（附样例）、**一次都没命中的**（附原因与可用项）、**提示**。
+ */
+export interface ReplacementReport {
+  /** 用户原样给出的请求（回显，便于逐条核对） */
+  requested: { round: string; choice: string }[];
+  /** 每个请求**实际生效**的处境 */
+  applied: { round: string; choice: string; count: number; samples: string[] }[];
+  /** **一次都没命中**的请求——如实回报，不当没发生 */
+  rejected: {
+    round: string;
+    choice: string;
+    /** 按原因**归类计数**（同类合并），并附一个示例套餐名 */
+    reasons: { kind: SubstitutionFailKind; count: number; sample: string }[];
+    allowedText: string;
+  }[];
+  notes: string[];
+}
+
 export interface MenuAnalysis {
   items: AnalyzedItem[];
   summary: MenuAnalysisSummary;
+  /** 仅当传入了 `substitutions` 时存在 */
+  replacement?: ReplacementReport;
 }
 
 export interface AnalyzeMenuOptions {
@@ -412,6 +440,13 @@ export interface AnalyzeMenuOptions {
    * 未指定的条目若遇歧义，照常列候选请用户选——**不替其猜测**。
    */
   variants?: Record<string, string>;
+  /**
+   * 用户显式指定的**套餐内替换**（按轮次名 / 选项名给，计划书 §5.3.6）。
+   *
+   * 逐套餐尝试解析并生效；**一次都没命中**的会在 `replacement.rejected` 里如实回报，
+   * 并回列可用轮次与选项——**不静默忽略**（与份量/口味歧义同一条规矩：不让机器替用户猜）。
+   */
+  substitutions?: readonly SubstitutionSpec[];
   /**
    * 取数来源（评审 R7）：传入后，本条结果会带上**如实的**工具轨迹。
    * 不传则不留轨迹——**不留轨迹好过臆造一条成功的调用**。
@@ -484,6 +519,26 @@ export async function analyzeMenu(
   let cursor = 0;
   let done = 0;
 
+  // 替换请求的**跨条目聚合**（见 ReplacementReport 的说明）
+  const subSpecs = options.substitutions ?? [];
+  const specKey = (s: { round: string; choice: string }): string => `${s.round}\u0000${s.choice}`;
+  const subApplied = new Map<
+    string,
+    { round: string; choice: string; count: number; samples: string[] }
+  >();
+  const subRejected = new Map<
+    string,
+    {
+      round: string;
+      choice: string;
+      byKind: Map<SubstitutionFailKind, { count: number; sample: string }>;
+      allowedText: string;
+    }
+  >();
+  const subNotes = new Set<string>();
+  const allowedTextOf = (allowed: { label: string; choices: { name: string }[] }[]): string =>
+    allowed.map((r) => `${r.label}[${r.choices.map((c) => c.name).join('/')}]`).join(' ；');
+
   const worker = async () => {
     for (;;) {
       const idx = cursor++;
@@ -496,7 +551,28 @@ export async function analyzeMenu(
           if (detail && detail.rounds.length > 0) {
             // 成功展开：写入**成功**收据（含实际商品码与关联号）
             const receipt = detailReceipt(item.code, true);
-            results[idx] = analyzeCombo(item, detail, matcher, [], source, traceOf(receipt));
+            const sub = resolveSubstitutions(detail, subSpecs);
+            const analyzed = analyzeCombo(item, detail, matcher, sub.requests, source, traceOf(receipt));
+            for (const n of sub.notes) subNotes.add(n);
+            for (const a of sub.applied) {
+              const k = specKey(a.spec);
+              const rec = subApplied.get(k) ?? { round: a.spec.round, choice: a.spec.choice, count: 0, samples: [] };
+              rec.count += 1;
+              if (rec.samples.length < 3) rec.samples.push(`${item.name}（${a.roundLabel}→${a.choiceName}）`);
+              subApplied.set(k, rec);
+            }
+            for (const u of sub.unresolved) {
+              const k = specKey(u.spec);
+              const rec =
+                subRejected.get(k) ??
+                { round: u.spec.round, choice: u.spec.choice, byKind: new Map(), allowedText: allowedTextOf(u.allowed) };
+              const seen = rec.byKind.get(u.kind);
+              // 同一请求在不同套餐失败的原因**可能不同**——按类计数，各留一个示例，不丢信息也不刷屏
+              if (seen) seen.count += 1;
+              else rec.byKind.set(u.kind, { count: 1, sample: u.where });
+              subRejected.set(k, rec);
+            }
+            results[idx] = analyzed;
             onProgress?.(++done, list.length);
             continue;
           }
@@ -543,6 +619,26 @@ export async function analyzeMenu(
     else singles++;
   }
 
+  const replacement: ReplacementReport | undefined =
+    subSpecs.length === 0
+      ? undefined
+      : {
+          requested: subSpecs.map((s) => ({ round: s.round, choice: s.choice })),
+          applied: [...subApplied.values()],
+          // 只有「一次都没命中」的才上报为拒绝；命中过的（其它套餐没这轮次属正常）不刷屏
+          rejected: [...subRejected.entries()]
+            .filter(([k]) => !subApplied.has(k))
+            .map(([, v]) => ({
+              round: v.round,
+              choice: v.choice,
+              reasons: [...v.byKind.entries()]
+                .map(([kind, x]) => ({ kind, count: x.count, sample: x.sample }))
+                .sort((a, b) => b.count - a.count),
+              allowedText: v.allowedText,
+            })),
+          notes: [...subNotes],
+        };
+
   return {
     items: results,
     summary: {
@@ -554,6 +650,7 @@ export async function analyzeMenu(
       solid: byConfidence.A + byConfidence.B,
       dataAnomalies: results.filter((i) => (i.dataAnomalies?.length ?? 0) > 0).length,
     },
+    ...(replacement === undefined ? {} : { replacement }),
   };
 }
 

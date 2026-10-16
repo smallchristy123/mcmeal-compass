@@ -52,20 +52,20 @@
   **`--priority` 决定首选是哪一张**（不是只印个标签）。
 - **正餐范围可解释** —— 默认只把**正餐候选**纳入推荐（甜品/冰饮/饮品不计入），
   需要比较「单品/加餐」时显式开 `--scope all`。
-- **配件替换对比**（⚠️ **可达性见下方说明**）—— 在官方允许的替换范围内更换饮料/配菜，
-  并**重算营养与价格**（非法替换会被拒并回列允许项）。
+- **配件替换对比** —— 在官方允许的替换范围内更换饮料/配菜，并**重算营养与价格**
+  （`--swap 轮次=选项`，如 `--swap 选择套餐内饮料=无糖可口可乐中杯`）。
+  非法替换会被**拒绝并回列可用项**；**一次都没命中的替换也会如实报出原因**，绝不悄悄跳过。
+  轮次名不唯一时（如同一套餐里有两个「小食」）**不替你猜**，而是要求用 `小食#2` 指定。
 - **最终复核真执行** —— 对入选方案按**当下**再报一次价（含完整组成的指纹），变价即重算预算/评分/解释；
   复核后超预算的方案会被撤下，**不拿旧价充数**。
 - **诚实的数据标注** —— 官方数据、组合加总、部分缺失、无法核实四级分层，**未知项绝不伪装为 0**；
   离线的真实请求数如实记为 **0**，夹具读取不会被写成一次成功的官方调用。
 
-> ⚠️ **「配件替换对比」的可达性如实说明（2026-10-16 核）**：该能力**已实现于分析层**
-> （`src/decompose.ts` 的 `checkSubstitutions` / `decomposeMeal`，并有 `tests/decompose.test.ts` 覆盖），
-> 但**当前 CLI 与 Skill 均未开放入口**——批量入口 `src/analyze.ts` 的调用处传的是**空替换数组**，
-> 而 `--variant` 只能指定**顶层菜单项**的份量/口味，够不到套餐内部的饮料/小菜轮次
-> （实测：`--budget 80 --min-protein 35 --variant 可乐=大杯` 与不加时输出逐字相同）。
-> 故**本版本无法从命令行或 Skill 直接演示这一步**——如实标注，**不把它算作当前可操作的能力**。
-> 详见 [`docs/DECISION_NOTES.md`](./docs/DECISION_NOTES.md) 的「10-16 追加 · O5」。
+> **「配件替换对比」的可达性（2026-10-16 已开放）**：替换能力早已实现于分析层
+> （`src/decompose.ts` 的 `checkSubstitutions` / `decomposeMeal`），但此前 CLI 与 Skill **均无入口**
+> （批量入口传的是空替换数组）。现已**接通**：`analyze.ts` 按名称解析并逐套餐生效，
+> CLI 新增 `--swap`，`SKILL.md` 补了用法与三条规矩，并新增 `tests/combo-substitution.test.ts`（12 例）。
+> 详见 [`docs/DECISION_NOTES.md`](./docs/DECISION_NOTES.md) 的「10-16 追加 · O5 结案」。
 
 ## 立刻试一下（不需要 Token）
 
@@ -122,6 +122,7 @@ node src/cli.ts --offline --budget 35 --scope all           # 纳入单品/加�
 node src/cli.ts --offline --budget 35 --min-protein 25 --avoid-sugary
 node src/cli.ts --offline --budget 35 --declared-allergy   # 触发安全闸
 node src/cli.ts --offline --budget 35 --json                # 含分数据源新鲜度与报价收据
+node src/cli.ts --offline --budget 80 --min-protein 35 --swap "选择套餐内饮料=无糖可口可乐中杯"  # 套餐内替换并重算
 ```
 
 > **口径三条**（都可被复核）：
@@ -220,8 +221,8 @@ mcmeal-compass/
 │   ├── schema.ts                # 统一类型契约（zod）
 │   ├── matching.ts              # 营养匹配（六级优先级 + 可信度分层 + 份量维度）
 │   ├── aliases.ts               # 人工别名表（含风险标注）
-│   ├── decompose.ts             # 套餐展开与替换校验（缺失不补零、非法替换必拒）
-│   ├── analyze.ts               # 营养分析统一入口（单品直配 / 套餐展开收口 + 组件结构化留存）
+│   ├── decompose.ts             # 套餐展开与替换校验（缺失不补零、非法替换必拒、**按名称解析替换**）
+│   ├── analyze.ts               # 营养分析统一入口（单品直配 / 套餐展开收口 + 组件结构化留存 + 替换报告）
 │   ├── detail-loader.ts         # 套餐详情加载器（失败**抛出原始错误** + 成功/失败两态缓存）
 │   ├── validate.ts              # kJ/kcal 换算一致性校验（异常即降级，不入完整推荐）
 │   ├── freshness.ts             # 数据新鲜度 TTL（分数据源；过期只能作历史样例）
@@ -234,7 +235,7 @@ mcmeal-compass/
 │   ├── recommend.ts             # 三方案生成与去重 + 偏好决定首选 + 最终复核接线
 │   ├── explain.ts               # 证据驱动解释（X/Y 由程序算；热量无目标不判优劣）
 │   ├── fixtures.ts              # 离线夹具加载（无 Token 也能演示；分数据源时刻）
-│   └── cli.ts                   # 命令行入口（概览 / 推荐；--scope、JSON 新鲜度）
+│   └── cli.ts                   # 命令行入口（概览 / 推荐；--scope、--swap、JSON 新鲜度与替换报告）
 ├── scripts/                     # 可复现的开发工具
 │   ├── measure-matching.ts      # 匹配质量量尺（离线，读快照）
 │   ├── fixture-manifest.ts      # 快照 manifest 生成/校验（离线，复现门槛）
@@ -244,14 +245,15 @@ mcmeal-compass/
 │   ├── secrets-scan.mjs         # 凭据扫描（工作树 + git 历史；白名单排除占位/测试假值）
 │   ├── check-placeholders.mjs   # 占位字样与非法时间戳检查（可 --dir 追加扫描待打包目录）
 │   └── independent-online-verify.mjs  # 独立在线复核（串行低负载；仓库与交付包根目录均可直接运行）
-└── tests/                       # 单元测试（node:test，**327 个用例**）
+└── tests/                       # 单元测试（node:test，**339 个用例**）
     ├── v3-acceptance.test.ts    # v3 验收要求（R1–R10，**只可迁移、不可删改**）
     ├── v3-probe-regression.test.ts  # v3 复审探针 R11–R13 回归（首选元数据/来源口径/失败收据）
     ├── v33-review-regression.test.ts # v3.2 复评回归（详情错误透传/混合轮次主件/禁止合成 live 成功）
     ├── v34-review-regression.test.ts # v3.3 复评回归（时区推断/D 级分层再分/别名边界）
     ├── v36-a-level.test.ts        # v3.6 甲案：A 级可达性（精确直配/含推断不升 A/组合归 B）
     ├── v361-api-consistency.test.ts  # v3.6.1：匹配器与分析层的 A/B 口径一致（含职责边界）
-    └── v362-reallimit.test.ts    # v3.6.2：真实限流形态（HTTP 200 + 业务码 508）与业务层有界重试
+    ├── v362-reallimit.test.ts    # v3.6.2：真实限流形态（HTTP 200 + 业务码 508）与业务层有界重试
+    └── combo-substitution.test.ts  # 2026-10-16：套餐内替换（`--swap`）名称解析·歧义拒绝·端到端重算
 ```
 
 ## 开发与测试

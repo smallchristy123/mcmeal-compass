@@ -13,7 +13,12 @@
 
 import { NutritionMatcher, type Confidence } from './matching.ts';
 import { DEFAULT_ALIASES } from './aliases.ts';
-import { analyzeMenu, type AnalyzedItem, type DataSourceReceipt } from './analyze.ts';
+import {
+  analyzeMenu,
+  type AnalyzedItem,
+  type DataSourceReceipt,
+  type ReplacementReport,
+} from './analyze.ts';
 import { loadFixtures, fixtureDetailLoader } from './fixtures.ts';
 import { McpClient, McpError, unwrapToolData } from './mcp-client.ts';
 import { createDetailLoader } from './detail-loader.ts';
@@ -40,6 +45,8 @@ interface CliOptions {
   offline: boolean;
   /** 显式指定的份量/口味：菜单名 → 取值 */
   variants: Record<string, string>;
+  /** 显式指定的**套餐内替换**（轮次名/选项名，计划书 §5.3.6） */
+  swaps: { round: string; choice: string }[];
   store?: string;
   city?: string;
   keyword?: string;
@@ -61,6 +68,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
   const opts: CliOptions = {
     offline: false,
     variants: {},
+    swaps: [],
     top: 15,
     sort: 'kcal',
     json: false,
@@ -78,6 +86,17 @@ function parseArgs(argv: readonly string[]): CliOptions {
         const pair = next() ?? '';
         const idx = pair.indexOf('=');
         if (idx > 0) opts.variants[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+        break;
+      }
+      case '--swap': {
+        // 形如「轮次=选项」；轮次可为 id、轮次名，或「名称#序号」（同名轮次）
+        const pair = next() ?? '';
+        const idx = pair.indexOf('=');
+        if (idx > 0) {
+          const round = pair.slice(0, idx).trim();
+          const choice = pair.slice(idx + 1).trim();
+          if (round.length > 0 && choice.length > 0) opts.swaps.push({ round, choice });
+        }
         break;
       }
       case '--store': opts.store = next(); break;
@@ -133,6 +152,9 @@ const USAGE = `
   --min-protein <g>  最低蛋白质（**所有批次统一先验**，价格下降不得绕过）
   --avoid-sugary     避开含糖饮料（按**实际选中组件**判定；成分无法核实时不宣称满足）
   --variant <名=值>  显式指定份量/口味，可重复；例：--variant 薯条=中 --variant 新地=朱古力
+  --swap <轮次=选项> 套餐内替换（计划书 §5.3.6），可重复；例：--swap 选择套餐内饮料=无糖可口可乐中杯
+                     轮次可用「轮次名」「轮次id」或「名称#序号」（同名轮次，如 小食#2）；
+                     选项可用「选项名」或「选项code」。**不在允许范围内的替换一律拒绝并回列可用项。**
   --declared-allergy 已声明过敏（触发安全闸：不再声称「安全」）
   --json             输出 JSON（含分数据源新鲜度与执行收据）
 
@@ -698,6 +720,44 @@ export function freshnessReport(src: Sourced): {
 }
 
 /**
+ * 渲染替换请求的执行报告（`--swap` 才有）。
+ * 原则：**生效了几处要说、一次都没生效的更要说明白**——不许「悄悄没替换」。
+ */
+export function renderReplacement(rep: ReplacementReport): string {
+  const L: string[] = [''];
+  L.push('【替换请求】');
+  for (const r of rep.requested) {
+    const hit = rep.applied.find((a) => a.round === r.round && a.choice === r.choice);
+    if (hit) {
+      L.push(
+        `  ✔ ${r.round} → ${r.choice}：已在 ${hit.count} 个套餐生效` +
+          (hit.samples.length > 0 ? `，例：${hit.samples.join('；')}` : ''),
+      );
+      continue;
+    }
+    const miss = rep.rejected.find((x) => x.round === r.round && x.choice === r.choice);
+    L.push(`  ✗ ${r.round} → ${r.choice}：**未生效**`);
+    if (miss) {
+      for (const x of miss.reasons) {
+        const label =
+          x.kind === 'round-not-found'
+            ? '本店多个套餐无此轮次'
+            : x.kind === 'round-ambiguous'
+              ? '轮次名不唯一——请改用「轮次名#序号」指定（如 小食#2）'
+              : '选项不在该轮次的允许范围内';
+        L.push(`      · ${label}：${x.count} 个套餐（例：${x.sample}）`);
+      }
+      if (miss.allowedText) L.push(`      可用项（取自示例套餐）：${miss.allowedText}`);
+    } else {
+      L.push('      · 未匹配到任何套餐');
+    }
+  }
+  for (const n of rep.notes) L.push(`  · ${n}`);
+  L.push('  说明：替换只在**该套餐的允许范围内**生效；不在范围内的请求一律不执行，并在此回列可用项。');
+  return `${L.join('\n')}\n`;
+}
+
+/**
  * 跑分析并产出最终输出文本。
  * **导出**以便测试进程内直接调用（本沙箱禁止 spawn 子进程，子进程测试跑不了）。
  */
@@ -716,7 +776,7 @@ export async function runAnalysis(
     }
   }
 
-  const { items, summary } = await analyzeMenu(src.items, matcher, src.loadDetail, {
+  const analysis = await analyzeMenu(src.items, matcher, src.loadDetail, {
     concurrency: 6,
     // 取数来源如实下传：离线即 offline（解释层的工具轨迹据此标注，评审 R7）
     source: {
@@ -728,7 +788,13 @@ export async function runAnalysis(
     sourceReceipts: src.sourceReceipts,
     ...(onProgress ? { onProgress } : {}),
     ...(Object.keys(variantsByCode).length > 0 ? { variants: variantsByCode } : {}),
+    ...(opts.swaps.length > 0 ? { substitutions: opts.swaps } : {}),
   });
+
+  const { items, summary } = analysis;
+  // 替换请求的执行报告（用户给了 --swap 才有）：**生效的说清、没生效的也要说清**
+  const replaceBlock =
+    analysis.replacement === undefined ? '' : renderReplacement(analysis.replacement);
 
   const freshness = freshnessReport(src);
 
@@ -766,14 +832,16 @@ export async function runAnalysis(
             minimumProteinGrams: opts.minProtein ?? null,
             avoidSugaryDrinks: opts.avoidSugary,
             declaredAllergy: opts.declaredAllergy,
+            substitutions: opts.swaps,
           },
           recommendation,
+          ...(analysis.replacement === undefined ? {} : { replacement: analysis.replacement }),
         },
         null,
         2,
       )}\n`;
     }
-    return `${renderRecommendation(recommendation, src, opts)}\n`;
+    return `${renderRecommendation(recommendation, src, opts)}${replaceBlock}\n`;
   }
 
   if (opts.json) {
@@ -785,12 +853,13 @@ export async function runAnalysis(
         freshness,
         summary,
         items,
+        ...(analysis.replacement === undefined ? {} : { replacement: analysis.replacement }),
       },
       null,
       2,
     )}\n`;
   }
-  return `${renderText(src, items, summary, opts)}\n`;
+  return `${renderText(src, items, summary, opts)}${replaceBlock}\n`;
 }
 
 /** 供测试：直接跑离线模式并返回输出 */
@@ -798,6 +867,7 @@ export async function runOfflineForTest(args: Partial<CliOptions> = {}): Promise
   const opts: CliOptions = {
     offline: true,
     variants: {},
+    swaps: [],
     top: 15,
     sort: 'kcal',
     json: false,

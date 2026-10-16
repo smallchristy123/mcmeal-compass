@@ -18,6 +18,8 @@
 | `online-20261016-103614-budget80-protein35.txt` | 真在线 | 2026-10-16 10:36:14 | `--budget 80 --min-protein 35`（**首选即套餐**） |
 | `online-20261016-103621-budget80-protein35-variant-colalarge.txt` | 真在线 | 2026-10-16 10:36:21 | 同上 ＋ `--variant 可乐=大杯`（**与上一条逐字相同**，见「已知局限」） |
 | `online-20261016-103730-budget65-protein35.txt` | 真在线 | 2026-10-16 10:37:30 | `--budget 65 --min-protein 35`（含 O4 的「¥62.00」实例） |
+| `online-20261016-105347-budget80-protein35.txt` | 真在线 | 2026-10-16 10:53:47 | `--budget 80 --min-protein 35`（替换**前**的基准） |
+| `online-20261016-105353-budget80-protein35-swap-sugarfree-coke.txt` | 真在线 | 2026-10-16 10:53:53 | 同上 ＋ `--swap 选择套餐内饮料=无糖可口可乐中杯`（**替换后**：36 个套餐生效） |
 
 门店均为 **麦当劳重庆嘉年华餐厅（3450024）**（由 `--city 重庆市 --keyword 观音桥` 解析所得）。
 
@@ -39,7 +41,11 @@
   而单品「蛋白/元」效率更高。**放宽预算即可让套餐入画**——见 `online-20261016-103614-budget80-protein35.txt`。
   完整推导见 `docs/DECISION_NOTES.md`「10-16 追加 · O3 结案」。
 - **`--variant` 够不到套餐内部轮次**（O5）：`online-20261016-103621-...-variant-colalarge.txt`
-  与 `...103614-...txt` **逐字相同**，即为该现象的留档证据（替换能力已实现但有入口缺失）。
+  与 `...103614-...txt` **逐字相同**，即为该现象的留档证据。
+  > **2026-10-16 晚些时候已解决**：套餐内替换改由 `--swap` 承担，并已接通 CLI 与分析层。
+  > 上面两份留档**保留不改**——它们是「当时确实如此」的证据；替换前后对照见
+  > `...105347-...txt` 与 `...105353-...-swap-sugarfree-coke.txt`
+  > （首选套餐 1143 kcal → **996 kcal**、碳水 117 g → **82 g**，价格与蛋白不变）。
 - **部分弹性套餐的官方计价高于菜单价**（O4）：如「不素之霸双层牛堡四件套」菜单 ¥32.00 → 官方 ¥62.00；
   **成因尚未查明**，见 `docs/DECISION_NOTES.md`「10-16 追加 · O4」。
 - **离线留档的数据是 2026-10-10 快照**，输出中的时效行会明确标注「已超时效 · 只能作历史样例」。
@@ -56,6 +62,8 @@ cff818dc35ddf426472d86f3a412459b1e7a13739ee1604cd8ab32729c915316  online-2026101
 89debd75b66b0cbdd50eea747b88b708ae850e016a4f62b7173a2cb836a0a4bc  online-20261016-103614-budget80-protein35.txt
 4c609e48b8d2f16dff9836a913e5a19208528ce7e97bd391f9a5654cf7cd6931  online-20261016-103621-budget80-protein35-variant-colalarge.txt
 3c6547ad405075d07d82756a113fa4c01e708351fff54c157c919e0a51b665f4  online-20261016-103730-budget65-protein35.txt
+3943a0f1ced56b14091d714f650175b7a49a0443bd329a177f0c0015e99ffc53  online-20261016-105347-budget80-protein35.txt
+f567f6fc0cff51a40c56cd03ef5c1cec2f46ba0cfa81927d56fe25beffe513e6  online-20261016-105353-budget80-protein35-swap-sugarfree-coke.txt
 ```
 
 > 复现提示：在线留档需要自己的 Token（`MCD_MCP_TOKEN`），且**门店菜单与价格随时间变化**，
