@@ -417,6 +417,7 @@ describe('T2.5 · 证据驱动的解释', () => {
     overByCents: 0,
     notes: [],
     verified: quote,
+    unavailable: false,
   });
 
   test('对比句里的数字由程序算出，可直接核对', () => {
@@ -566,6 +567,7 @@ describe('T2.3 补充 · 收据 / 0 元报价 / 有界并发 / 止损', () => {
       overByCents: 0,
       notes: [],
       verified: false,
+      unavailable: false,
     };
     const pricer: Pricer = async (it) => okAttempt(22, 22, 0, it.code);
     const r = await requoteFinal(p, pricer);

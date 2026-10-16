@@ -99,11 +99,21 @@ const fetchImpl = async (url, init) => {
   return res;
 };
 
+// 版本**唯一源**：package.json（复评 P2——本脚本此前硬写 0.1.0，会被当成旧版）
+const PKG_VERSION = (() => {
+  const dirs = [resolve(SRC_ROOT, '..'), resolve(SRC_ROOT, '..', '..'), process.cwd()];
+  for (const d of dirs) {
+    const p = join(d, 'package.json');
+    if (existsSync(p)) return JSON.parse(readFileSync(p, 'utf8')).version;
+  }
+  return 'unknown';
+})();
+
 const client = new McpClient({
   url: ENDPOINT,
   token: token.value,
   clientName: 'mcmeal-compass-independent-verify',
-  clientVersion: '0.1.0',
+  clientVersion: PKG_VERSION,
   timeoutMs: 20000,
   /** 串行、低负载：不做重试，让真实结果如实呈现（限流就记限流） */
   maxRetries: 0,

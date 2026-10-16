@@ -24,6 +24,7 @@ import { NutritionMatcher } from '../src/matching.ts';
 import { DEFAULT_ALIASES } from '../src/aliases.ts';
 import { DEFAULT_FIXTURE_DIR } from '../src/fixtures.ts';
 import { McpClient } from '../src/mcp-client.ts';
+import { VERSION } from '../src/version.ts';
 
 const cfgPath = join(process.env['USERPROFILE'] ?? process.env['HOME'] ?? '.', '.workbuddy', 'mcp.json');
 const cfg = JSON.parse(await readFile(cfgPath, 'utf-8')) as {
@@ -35,7 +36,7 @@ const token = (mcd.headers['Authorization'] ?? '').replace(/^Bearer\s+/i, '').tr
 if (!token) throw new Error('mcd-mcp 配置里没有 Authorization（Bearer Token）');
 
 // ⚠️ 复用应用客户端：同一套协议形态、会话与错误校验
-const client = new McpClient({ url: mcd.url, token, clientName: 'mcmeal-combo-probe', clientVersion: '0.3.0' });
+const client = new McpClient({ url: mcd.url, token, clientName: 'mcmeal-combo-probe', clientVersion: VERSION });
 const info = await client.initialize();
 console.log(`客户端：${info.era}/${info.protocolVersion}（协商：${info.protocolNegotiation}）\n`);
 

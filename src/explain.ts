@@ -82,6 +82,16 @@ export function collectEvidence(priced: PricedCandidate): EvidenceRef[] {
         `${priced.effectivePrice === null ? '—' : formatCents(priced.effectivePrice)}` +
         `${priced.receipt?.errorCode ? `（复核失败：${priced.receipt.errorCode}）` : ''}`,
     });
+  } else if (priced.priceSource === 'menu-adjusted-unverified') {
+    // 复评 v3.7.1 · P1：金额是「菜单价 ＋ 已知替换价差」的**推算值**，
+    // 既不是菜单价、更不是官方实付，必须逐字说清。
+    refs.push({
+      id: `price:${priced.item.code}`,
+      kind: 'official-price',
+      label:
+        `官方计价**未取得**（${priced.receipt?.errorCode ?? '未知原因'}）：` +
+        `按调整后菜单价推算（${priced.priceBasis ?? '菜单价＋已知替换价差'}）——**不是官方实付，也未确认可售**`,
+    });
   } else if (priced.receipt && !priced.receipt.ok) {
     refs.push({
       id: `price:${priced.item.code}`,
@@ -151,6 +161,11 @@ export function explainPlan(
       statements.push(
         `${formatCents(priced.effectivePrice)} 系**初次官方报价**；最终复核未成功` +
           `（${priced.receipt.errorCode ?? '未知原因'}）——**未核实**，不代表当前实付。`,
+      );
+    } else if (priced.priceSource === 'menu-adjusted-unverified') {
+      statements.push(
+        `${formatCents(priced.effectivePrice)} 系**调整后菜单价**推算` +
+          `（${priced.priceBasis ?? '菜单价＋已知替换价差'}）——**官方计价未取得，不是实付，也未确认可售**。`,
       );
     } else {
       statements.push(`菜单价 ${formatCents(priced.effectivePrice)}——**官方计价未取得，未核实实付**。`);

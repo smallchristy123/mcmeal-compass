@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { unwrapMcpEnvelope } from '../src/toon.ts';
 import { QueryMealsDataSchema, toMenuItems } from '../src/schema.ts';
 import { McpClient } from '../src/mcp-client.ts';
+import { VERSION } from '../src/version.ts';
 import { buildManifest, MANIFEST_NAME } from './fixture-manifest.ts';
 import { forbiddenWrite } from '../src/capture-guard.ts';
 
@@ -97,7 +98,7 @@ if (!token) throw new Error('mcd-mcp 配置里没有 Authorization（Bearer Toke
  * 旧版脚本自建 fetch + 自有握手，于是「脚本跑通」并不能证明应用入口也通；
  * 现在采集与运行时走同一条客户端路径（同一套错误校验、协议形态与会话处理）。
  */
-const client = new McpClient({ url: mcd.url, token, clientName: 'mcmeal-compass-capture', clientVersion: '0.3.0' });
+const client = new McpClient({ url: mcd.url, token, clientName: 'mcmeal-compass-capture', clientVersion: VERSION });
 const info = await client.initialize();
 console.log(`客户端：${info.era}/${info.protocolVersion}（协商：${info.protocolNegotiation}）`);
 console.log(`采集目录：${outDir}`);

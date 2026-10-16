@@ -20,6 +20,7 @@
  */
 
 import { unwrapMcpEnvelope, ToonParseError } from './toon.ts';
+import { VERSION } from './version.ts';
 import {
   QueryMealsDataSchema,
   toMenuItems,
@@ -213,7 +214,8 @@ export class McpClient {
     this.protocolVersion = options.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
     this.era = protocolEraOf(this.protocolVersion);
     this.clientName = options.clientName ?? 'mcmeal-compass';
-    this.clientVersion = options.clientVersion ?? '0.1.0';
+    // 版本唯一源：src/version.ts（由 package.json 生成，见 scripts/sync-version.mjs）
+    this.clientVersion = options.clientVersion ?? VERSION;
   }
 
   /** 当前协议口径（供自检与文档引用）——**含版本协商结论**，不留模糊表述 */

@@ -16,7 +16,7 @@
 import type { AnalyzedItem } from './analyze.ts';
 import type { ConstraintOutcome, MealRequest, Priority } from './constraints.ts';
 import { applyHardConstraints, checkNonPriceConstraints } from './constraints.ts';
-import type { PricedCandidate, PricingOutcome, Pricer, PriceReceipt } from './pricing.ts';
+import type { ExcludedCandidate, PricedCandidate, PricingOutcome, Pricer, PriceReceipt } from './pricing.ts';
 import { confirmPrices, requoteFinal, applyRequote, summarizeReceipts } from './pricing.ts';
 import {
   buildScoreContext,
@@ -54,6 +54,12 @@ export interface Recommendation {
   safetyNotice: string | null;
   /** 预算全超时的备选说明 */
   overBudgetNote: string | null;
+  /**
+   * **未被列为方案**的候选及原因（复评 v3.7.1 · P1）——
+   * 不可售（官方否定）与价格未知（官方未核且替换价差不全）两类。
+   * 单列出来，是为了让「少给方案」有据可查，而不是悄悄消失。
+   */
+  excluded: ExcludedCandidate[];
   notes: string[];
 }
 
@@ -113,6 +119,7 @@ export function buildRecommendation(input: BuildRecommendationInput): Recommenda
         ? `所有候选均超出预算。最接近的是「${pricing.nearestOver.item.name}」，` +
           `超出 ¥${toYuan(pricing.nearestOver.overByCents as Cents).toFixed(2)}——**需你明确同意后才纳入考虑**。`
         : (pricing.notes.find((n) => n.includes('超出预算')) ?? null),
+      excluded: [...pricing.excluded],
       notes: [
         ...notes,
         ...pricing.notes,
@@ -137,7 +144,13 @@ export function buildRecommendation(input: BuildRecommendationInput): Recommenda
   );
   notes.push(
     `帕累托前沿（实付价↓ × 蛋白质↑）共 ${front.size} 项，供「均衡」口径参考；` +
-      `本轮价格口径＝${pool.some((p) => p.priceSource === 'official') ? '官方实付价（未取得者用菜单价并标注）' : '菜单价（官方计价未取得，均标「未核实实付」）'}。`,
+      `本轮价格口径＝${
+        pool.some((p) => p.priceSource === 'official')
+          ? '官方实付价（未取得者按调整后菜单价推算并标注）'
+          : pool.some((p) => p.priceSource === 'menu-adjusted-unverified')
+            ? '调整后菜单价（含已知替换价差；官方计价未取得，均标「未核实实付」）'
+            : '菜单价（官方计价未取得，均标「未核实实付」）'
+      }。`,
   );
 
   const taken = new Set<string>();
@@ -234,6 +247,7 @@ export function buildRecommendation(input: BuildRecommendationInput): Recommenda
     shortfallNote,
     safetyNotice: outcome.safetyNotice,
     overBudgetNote: pricing.notes.find((n) => n.includes('超出预算')) ?? null,
+    excluded: [...pricing.excluded],
     notes: [...notes, ...pricing.notes],
   };
 }
@@ -247,9 +261,14 @@ function energyOptions(req: MealRequest): { energyTargetKcal: number | null } {
 function budgetReason(p: PricedCandidate): string {
   if (p.effectivePrice === null) return '本轮候选中未取得可比价格';
   const amount = `¥${toYuan(p.effectivePrice).toFixed(2)}`;
-  return p.priceSource === 'official' && p.verified
-    ? `在预算内的候选中**官方实付最低**（${amount}，已核实）`
-    : `在预算内的候选中**菜单价最低**（${amount}）——**实付未核实**，请以门店结算为准`;
+  if (p.priceSource === 'official' && p.verified) {
+    return `在预算内的候选中**官方实付最低**（${amount}，已核实）`;
+  }
+  // 复评 v3.7.1 · P1：推算值不得含糊成"菜单价"——它不是菜单价，是含已知价差的调整价
+  if (p.priceSource === 'menu-adjusted-unverified') {
+    return `在预算内的候选中**调整后菜单价最低**（${amount}，含已知替换价差）——**实付未核实**，请以门店结算为准`;
+  }
+  return `在预算内的候选中**菜单价最低**（${amount}）——**实付未核实**，请以门店结算为准`;
 }
 
 function makePlan(
@@ -335,6 +354,8 @@ export async function recommendForMenu(
       notes: [...mergedNotes, summarizeReceipts(receipts, rescued.filter((p) => p.verified).length).note],
       receipts,
       summary: summarizeReceipts(receipts, rescued.filter((p) => p.verified).length),
+      // 回补池的排除项也要如实汇总（不可售 / 价格未知）——两个池子的账不能只留一个
+      excluded: [...pricing.excluded, ...retry.excluded],
     };
   }
 
@@ -358,6 +379,7 @@ export async function recommendForMenu(
   };
   recommendation = {
     ...recommendation,
+    excluded: [...recommendation.excluded, ...fin.excluded],
     notes: [...stripSummary(recommendation.notes), summary.note],
   };
 
@@ -378,15 +400,21 @@ async function finalizeWithRequote(
   pricer: Pricer,
   budgetCents: Cents,
   req: MealRequest,
-): Promise<{ recommendation: Recommendation; receipts: PriceReceipt[]; verifiedCount: number }> {
+): Promise<{
+  recommendation: Recommendation;
+  receipts: PriceReceipt[];
+  verifiedCount: number;
+  excluded: ExcludedCandidate[];
+}> {
   if (recommendation.plans.length === 0) {
-    return { recommendation, receipts: [], verifiedCount: 0 };
+    return { recommendation, receipts: [], verifiedCount: 0, excluded: [] };
   }
 
   const notes = [...recommendation.notes];
   const kept: PricedCandidate[] = [];
   const droppedNotes: string[] = [];
   const receipts: PriceReceipt[] = [];
+  const excluded: ExcludedCandidate[] = [];
   let verifiedCount = 0;
 
   for (const plan of recommendation.plans) {
@@ -395,12 +423,38 @@ async function finalizeWithRequote(
     const priced = applyRequote(plan.priced, requote, budgetCents);
     if (priced.verified) verifiedCount++;
 
+    // ⚠️ v3.7.1 复评 P1：复核阶段的两类"不能算方案"必须先分流
+    //   ① 官方否定可售性 ⇒ 撤下（连备选都不作）；
+    //   ② 价格未知（官方未核且替换价差不全）⇒ 撤出预算内，单列说明。
+    if (priced.unavailable) {
+      excluded.push({
+        name: priced.item.name,
+        code: priced.item.code,
+        kind: 'unavailable',
+        detail:
+          `最终复核被官方判定不可售（${priced.receipt.businessCode === undefined ? '' : `业务码 ${priced.receipt.businessCode}：`}` +
+          `${priced.receipt.errorMessage ?? '无说明'}）`,
+      });
+      droppedNotes.push(`${plan.label}「${priced.item.name}」：官方判定该组成**不可售**`);
+      continue;
+    }
+    if (priced.effectivePrice === null) {
+      excluded.push({
+        name: priced.item.name,
+        code: priced.item.code,
+        kind: 'unknown-price',
+        detail: '最终复核未取得价格，且替换价差不全 ⇒ 调整后菜单价无法推算（不用原菜单价充数）',
+      });
+      droppedNotes.push(`${plan.label}「${priced.item.name}」：**价格未知**，不参与预算判定`);
+      continue;
+    }
+
     const violation = checkNonPriceConstraints(priced.item, req);
     if (violation) {
       droppedNotes.push(`${plan.label}「${priced.item.name}」：${violation.detail}`);
       continue;
     }
-    if (priced.effectivePrice !== null && priced.effectivePrice > budgetCents) {
+    if (priced.effectivePrice > budgetCents) {
       droppedNotes.push(
         `${plan.label}「${priced.item.name}」：最终复核实付 ¥${toYuan(priced.effectivePrice).toFixed(2)} 超出预算 ¥${req.budgetCny.toFixed(2)}`,
       );
@@ -490,6 +544,7 @@ async function finalizeWithRequote(
     recommendation: { ...recommendation, plans: ordered, primaryKey, primaryNote, shortfallNote, notes },
     receipts,
     verifiedCount,
+    excluded,
   };
 }
 

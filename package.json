@@ -1,6 +1,6 @@
 {
   "name": "mcmeal-compass",
-  "version": "3.7.1",
+  "version": "3.7.2",
   "private": true,
   "description": "麦麦营养管家 · McMeal Compass —— 基于麦当劳中国官方 MCP 的可解释营养搭配与实时计价工具",
   "type": "module",
@@ -18,7 +18,8 @@
     "check:combo": "node scripts/check-combo-decomposition.ts",
     "capture": "node scripts/capture-fixtures.ts",
     "verify:fixtures": "node scripts/fixture-manifest.ts",
-    "gate": "npm run verify:fixtures && npm test && npm run typecheck && node -e \"import('./src/cli.ts').then(async (m) => {const out = await m.runOfflineForTest({ top: 3 });if (!out.includes(String.fromCharCode(38376,24215))) throw new Error('离线输出异常');console.log(String.fromCharCode(10) + '✅ gate 全过：夹具一致 · 测试全绿 · 类型干净 · 离线可跑');})\"",
+    "verify:version": "node scripts/sync-version.mjs --check",
+    "gate": "npm run verify:version && npm run verify:fixtures && npm test && npm run typecheck && node -e \"import('./src/cli.ts').then(async (m) => {const out = await m.runOfflineForTest({ top: 3 });if (!out.includes(String.fromCharCode(38376,24215))) throw new Error('离线输出异常');console.log(String.fromCharCode(10) + '✅ gate 全过：夹具一致 · 测试全绿 · 类型干净 · 离线可跑');})\"",
     "review:samples": "node scripts/review-samples.ts",
     "review:score": "node scripts/review-samples.ts --score"
   },

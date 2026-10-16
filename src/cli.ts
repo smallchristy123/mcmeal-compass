@@ -37,8 +37,10 @@ import {
   type Pricer,
   type PriceReceipt,
   type PriceRequest,
+  type PriceSource,
 } from './pricing.ts';
 import { freshnessOf, localIsoNow } from './freshness.ts';
+import { VERSION } from './version.ts';
 import { pathToFileURL } from 'node:url';
 
 // ─────────────────── 参数解析 ───────────────────
@@ -285,6 +287,8 @@ async function loadFromMcp(opts: CliOptions): Promise<Sourced> {
   const client = new McpClient({
     url: process.env['MCD_MCP_URL'] ?? 'https://mcp.mcd.cn',
     token,
+    // 对外报的版本必须与包一致（复评 P2：客户端不得再报 0.1.0）
+    clientVersion: VERSION,
     // 协议口径可由环境变量指定；默认 legacy（对 mcp.mcd.cn 实测可用）
     ...(process.env['MCD_PROTOCOL_VERSION'] ? { protocolVersion: process.env['MCD_PROTOCOL_VERSION'] } : {}),
   });
@@ -683,10 +687,12 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
           ? '（官方计价已核实）'
           : p.priced.priceSource === 'official-unverified'
             ? '（初次报价；最终复核未成功——未核实，不代表当前实付）'
-            : '（菜单价，未核实实付）';
+            : p.priced.priceSource === 'menu-adjusted-unverified'
+              ? `（**菜单价＋已知替换价差**推算${p.priced.priceBasis ? `：${p.priced.priceBasis}` : ''}——**不是官方实付，也未确认可售**）`
+              : '（菜单价，未核实实付）';
       // 替换过的方案：若官方计价被拒（服务端不接受该组成），必须**明说价差没算进去**，
       // 否则用户会以为"菜单价里已含替换加价"（复评 P1 的整改要求之一）。
-      const subNote = substitutionPriceNote(p.priced.receipt);
+      const subNote = substitutionPriceNote(p.priced.receipt, p.priced.priceSource);
       L.push(
         `  实付    ${p.priced.effectivePrice === null ? '—' : formatCents(p.priced.effectivePrice)}` +
           srcLabel +
@@ -719,6 +725,15 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
     L.push(`【说明】${rec.shortfallNote}`);
     L.push('');
   }
+  // 复评 v3.7.1 · P1：没被列成方案的候选必须**单列说清**，不许静默消失
+  if (rec.excluded.length > 0) {
+    L.push('【未纳入预算判定的候选（如实单列，不冒充方案、也不作备选）】');
+    for (const e of rec.excluded) {
+      const tag = e.kind === 'unavailable' ? '不可售' : '价格未知';
+      L.push(`  · [${tag}] ${e.name}——${e.detail}`);
+    }
+    L.push('');
+  }
   L.push(`【偏好如何生效】${rec.primaryNote}`);
   L.push('');
   if (rec.notes.length > 0) {
@@ -730,7 +745,8 @@ export function renderRecommendation(rec: Recommendation, src: Sourced, opts: Cl
   L.push('说明：');
   L.push('  · 所有数值均由程序计算；缺失一律标 — 或 ≥，绝不填 0 冒充。');
   L.push('  · 权重为**排序偏好（内部启发式）**，不是医学标准，也不构成营养建议。');
-  L.push('  · 官方计价未取得时以菜单价计，并明确标注「未核实实付」。');
+  L.push('  · 官方计价未取得时，按**调整后菜单价**（菜单价 ＋ **已知**替换价差）推算，并标明「未核实实付」；');
+  L.push('    替换价差不全者按**价格未知**处理、官方判定不可售者**直接移出可行集**——二者都不纳入预算判定。');
   L.push('  · ⛔ 本版本**不能下单**：create-order 未接入，下单已显式关闭（ORDERING_DISABLED）。');
   L.push(line);
   return L.join('\n');
@@ -765,11 +781,23 @@ export function freshnessReport(src: Sourced): {
  *   · 同时 `ok === false` ⇒ 服务端拒绝了该组成（如 60006）。
  * 此时展示的价格**不含替换项价差**，必须当场说明——否则用户会以为菜单价里已经算了加价。
  */
-function substitutionPriceNote(receipt: PriceReceipt | undefined): string {
+/**
+ * 替换方案的**价格诚实提示**（复评 P1 整改要求之一；v3.7.1 再整改）。
+ *
+ * ⚠️ 提示必须与**实际金额口径**一致：v3.7.1 曾一律写「此价不含替换项价差」，
+ * 而在新口径下金额已是「菜单价 ＋ 已知价差」的推算值——两句话会互相矛盾。
+ */
+function substitutionPriceNote(receipt: PriceReceipt | undefined, source: PriceSource): string {
   if (!receipt) return '';
   if (!receipt.argsSummary.includes('roundList=')) return '';
   if (receipt.ok) return '';
   const code = receipt.businessCode ?? receipt.errorCode ?? '未知';
+  if (source === 'menu-adjusted-unverified') {
+    return `；⚠️ 替换后的组成已送官方计价但被拒（${code}）——金额为**推算值**（菜单价＋已知替换价差），**非官方实付、也未确认可售**`;
+  }
+  if (source === 'official' || source === 'official-unverified') {
+    return `；⚠️ 替换后的组成复核被拒（${code}）——金额来自**初次官方报价**，**非最终核实**`;
+  }
   return `；⚠️ 替换后的组成已送官方计价但被拒（${code}）——**此价不含替换项价差**，请以门店结算为准`;
 }
 

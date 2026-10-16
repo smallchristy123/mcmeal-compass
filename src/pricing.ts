@@ -160,8 +160,20 @@ export function receiptCompositionOf(request: PriceRequest): Pick<
  * ⚠️ 病根（v3 被复审判 P0）：最终复核失败时，`applyRequote` 把来源回退成 `candidate.priceSource`，
  * 于是「初次官方价 + 复核失败」被渲染成「官方计价实付…（含优惠与费用，已核）」
  * ——**未核实却写着已核**，正是最该被阻断的一类不一致。
+ *
+ * ⚠️ v3.7.1 复评 P1 新增第四态 `menu-adjusted-unverified`：
+ *   「菜单价 ＋ **已知的**替换价差」这一推算值。此前官方计价失败时直接回退**未调整**的菜单价
+ *   （`effectivePrice = item.price`），于是「菜单价 ¥28、已知 +¥2、预算 ¥29」仍被判**预算内**——
+ *   明知价差却拿它去过硬预算闸门，两句话不能同时成立。现改为：
+ *     · 全部被选组件的价差都拿到了 → 用**调整后菜单价**（本来源），并标明不是官方实付；
+ *     · 任一价差缺失 → **价格视为未知**（`effectivePrice=null`、`withinBudget=false`），不进预算内方案；
+ *     · 官方明确「不可售」（如业务码 60006）→ 直接**移出可行集**（见 `PricedCandidate.unavailable`）。
  */
-export type PriceSource = 'official' | 'menu' | 'official-unverified';
+export type PriceSource =
+  | 'official'
+  | 'menu'
+  | 'official-unverified'
+  | 'menu-adjusted-unverified';
 
 export interface PricedCandidate {
   item: AnalyzedItem;
@@ -180,6 +192,14 @@ export interface PricedCandidate {
   notes: string[];
   /** 是否已由官方计价核实（=false 时展示层必须标「未核实」） */
   verified: boolean;
+  /**
+   * 官方**明确判定该组成不可售**（如业务码 60006「商品已售罄或不可售」）。
+   * 这类候选**不是"实付未核实"，而是"买不到"**——必须移出可行集，
+   * 既不作方案、也不作「最接近预算」的备选（复评 v3.7.1 · P1）。
+   */
+  unavailable: boolean;
+  /** 金额依据的人可读描述（如「菜单价 ＋ 可乐大杯 +¥2.00」）——只在非官方价时出现 */
+  priceBasis?: string;
 }
 
 export interface PricingOutcome {
@@ -192,6 +212,17 @@ export interface PricingOutcome {
   receipts: PriceReceipt[];
   /** 本次「到底做了什么」的如实统计（离线=0 次真实请求） */
   summary: RequestSummary;
+  /** **未纳入可行集**的候选及原因（不可售 / 价格未知）——如实列出，不静默丢弃 */
+  excluded: ExcludedCandidate[];
+}
+
+/** 被移出可行集的候选（复评 v3.7.1 · P1） */
+export interface ExcludedCandidate {
+  name: string;
+  code: string;
+  /** `unavailable`＝官方判定不可售；`unknown-price`＝官方计价未取得且替换价差不全 */
+  kind: 'unavailable' | 'unknown-price';
+  detail: string;
 }
 
 /** 一次报价的产出：结果 + 收据 */
@@ -377,6 +408,93 @@ export function verifyQuoteBasket(
   };
 }
 
+// ─────────────── 计价失败的语义分流与「调整后菜单价」（v3.7.1 复评 P1） ───────────────
+
+/**
+ * 计价失败的语义分类。**这两类不能混为一谈**：
+ *   · `unavailable` —— 官方明确说「这个组成买不到」（已售罄/不可售/已下架）。
+ *                      它不是"价格未核实"，而是**可售性已否定** ⇒ 移出可行集；
+ *   · `unknown`     —— 超时 / 限流 / 网络 / 未发起请求：**价格与可售性都不知道**。
+ *                      此时可以用「菜单价 ＋ 已知价差」做**明示为推算**的比较，
+ *                      但**价差不全就不得比较**（宁可说不知道，不得用偏低的价格过闸门）。
+ */
+export type PriceFailureKind = 'unavailable' | 'unknown';
+
+/**
+ * 「官方判定不可售」的业务码白名单。
+ * `60006` 为**实测**所得：本地菜单快照与门店实时商品列表偏离时，带 `roundList` 的组成报价被拒，
+ * 报文即「商品已售罄或不可售」（见 `docs/DECISION_NOTES.md` 的 O4/O9 与复评 P1 整改节）。
+ */
+const UNAVAILABLE_BUSINESS_CODES: readonly number[] = [60006];
+
+/** 业务码缺失时的**辅助**判据（报文含义）。刻意收窄，避免误伤。 */
+const UNAVAILABLE_TEXT = /(已售罄|不可售|已下架|已停售|无法购买)/;
+
+/** 把一次失败的收据分流成 `unavailable` / `unknown`；`ok=true` 返回 null */
+export function classifyPriceFailure(receipt: PriceReceipt): PriceFailureKind | null {
+  if (receipt.ok) return null;
+  if (typeof receipt.businessCode === 'number' && UNAVAILABLE_BUSINESS_CODES.includes(receipt.businessCode)) {
+    return 'unavailable';
+  }
+  if (UNAVAILABLE_TEXT.test(receipt.errorMessage ?? '')) return 'unavailable';
+  return 'unknown';
+}
+
+/** 「调整后菜单价」的推算结果 */
+export interface AdjustedMenuPrice {
+  /** 调整后菜单价（分） */
+  cents: Cents;
+  /** 相加的替换价差合计（分）；0 表示组成与默认一致（金额即菜单价） */
+  adjustment: Cents;
+  /** 人可读依据（如「菜单价 ＋ 无糖可口可乐中杯 ±¥0.00」） */
+  basis: string;
+}
+
+/**
+ * 按「菜单价 ＋ Σ(已选非默认项的官方价差 × 数量)」推算调整后菜单价。
+ *
+ * **只在每一处与默认不同的选项都拿到了价差时才给值**；任一缺失即返回 `null`
+ * （`null` 的语义是「价格未知」，调用方**不得**退回原菜单价去过硬预算）。
+ * 组成与默认一致（无替换）时返回金额即菜单价、`adjustment=0`。
+ */
+export function adjustedMenuPriceOf(item: AnalyzedItem): AdjustedMenuPrice | null {
+  if (item.price === null || !Number.isFinite(item.price)) return null;
+  const comps = item.components ?? [];
+  let adjustment = 0;
+  const parts: string[] = [];
+  const missing: string[] = [];
+
+  for (const c of comps) {
+    // 默认项：其相对默认的价差恒为 0（菜单价已含），无须价差数据
+    if (c.isDefault === true) continue;
+    const qty = c.quantity > 0 ? c.quantity : 1;
+    if (typeof c.diffPrice !== 'number' || !Number.isFinite(c.diffPrice)) {
+      missing.push(`「${c.roundName} → ${c.choiceName}」`);
+      continue;
+    }
+    adjustment += c.diffPrice * qty;
+    if (c.diffPrice !== 0) {
+      const sign = c.diffPrice > 0 ? '+' : '−';
+      const abs = (Math.abs(c.diffPrice) * qty) / 100;
+      parts.push(`${c.choiceName}${qty > 1 ? `×${qty}` : ''} ${sign}¥${abs.toFixed(2)}`);
+    }
+  }
+
+  if (missing.length > 0) return null;
+
+  const cents = (item.price + adjustment) as Cents;
+  return {
+    cents,
+    adjustment: adjustment as Cents,
+    basis: parts.length === 0 ? '菜单价（组成与默认一致）' : `菜单价 ＋ ${parts.join(' ＋ ')}`,
+  };
+}
+
+/** 推算值的价源：无价差（金额＝菜单价）时沿用 `menu`，有条目价差时用第四态 */
+function sourceOfAdjusted(adj: AdjustedMenuPrice): PriceSource {
+  return adj.adjustment === 0 ? 'menu' : 'menu-adjusted-unverified';
+}
+
 export interface ConfirmOptions {
   /** 官方计价失败时是否回退用菜单价（默认 true，并标注来源） */
   fallbackToMenuPrice?: boolean;
@@ -440,15 +558,29 @@ export async function confirmPrices(
         stage: 'initial',
         ...receiptCompositionOf(request),
       };
+      // 未发起 ≠ 价格＝菜单价：若该候选带替换，数字必须按**调整后菜单价**给，否则就是用偏低值过闸门
+      const adj = fallback ? adjustedMenuPriceOf(item) : null;
+      const skippedNotes = [`未发起官方计价（${reason}），如展示须标「未核实实付」`];
+      if (adj && adj.adjustment !== 0) {
+        skippedNotes.push(`该候选含替换项，金额按**调整后菜单价**推算（${adj.basis}）——**不是官方实付，也未确认可售**`);
+      } else if (adj) {
+        skippedNotes.push('金额为菜单价（无替换项，与调整后菜单价同值）——**未核实实付**');
+      } else {
+        skippedNotes.push(
+          '替换价差**不完整**，调整后菜单价无法推算 ⇒ **价格未知**，不参与预算判定（不退回原菜单价充数）',
+        );
+      }
       return {
         item,
         quote: null,
         receipt,
-        effectivePrice: fallback ? item.price : null,
-        priceSource: 'menu',
-        withinBudget: item.price !== null && fallback && item.price <= budgetCents,
-        overByCents: fallback && item.price !== null ? Math.max(0, item.price - budgetCents) : Number.POSITIVE_INFINITY,
-        notes: [`未发起官方计价（${reason}），如展示须标「未核实实付」`],
+        effectivePrice: adj ? adj.cents : null,
+        priceSource: adj ? sourceOfAdjusted(adj) : 'menu',
+        ...(adj ? { priceBasis: adj.basis } : {}),
+        unavailable: false,
+        withinBudget: adj !== null && adj.cents <= budgetCents,
+        overByCents: adj === null ? Number.POSITIVE_INFINITY : Math.max(0, adj.cents - budgetCents),
+        notes: skippedNotes,
         verified: false,
       };
     }
@@ -488,13 +620,20 @@ export async function confirmPrices(
 
     const itemNotes: string[] = [];
     let effectivePrice: Cents | null = null;
-    let priceSource: 'official' | 'menu' = 'menu';
+    let priceSource: PriceSource = 'menu';
+    let priceBasis: string | undefined;
     let verified = false;
+    let unavailable = false;
 
     // 报价对象核对（评审 R9）：拿不到逐项清单 / 商品或数量不符 ⇒ 不能算"已核实"
     const verdict = attempt.quote ? verifyQuoteBasket(request, attempt.quote) : null;
     const pricePresent = Boolean(attempt.quote && attempt.quote.price !== null);
     const basketOk = verdict?.status === 'matched';
+
+    // 官方失败时的降级依据：**调整后菜单价**（菜单价 ＋ 已知替换价差）。
+    // null ⇒ 替换价差不全 ⇒ 价格未知（**绝不退回原菜单价充数**）。
+    const adj = fallback ? adjustedMenuPriceOf(item) : null;
+    const failureKind = classifyPriceFailure(attempt.receipt);
 
     // ⚠️ 只有「官方给出价格 **且** 报价对象核对得上」才采纳为官方价；
     //    合法的 0 元报价照用（0 元 ≠ 没报价），但同样要过核对这一关。
@@ -510,27 +649,50 @@ export async function confirmPrices(
         );
       }
       if (verdict && verdict.detail.includes('另含')) itemNotes.push(`报价对象核对：${verdict.detail}`);
+    } else if (failureKind === 'unavailable') {
+      // 官方**明确否定可售性**：这不是"实付未核实"，而是"买不到" ⇒ 移出可行集
+      unavailable = true;
+      itemNotes.push(
+        `官方判定该组成**不可售**（${attempt.receipt.businessCode === undefined ? '' : `业务码 ${attempt.receipt.businessCode}：`}` +
+          `${attempt.receipt.errorMessage ?? '无说明'}）——**移出可行集**：既不作方案，也不作「最接近预算」的备选`,
+      );
     } else if (pricePresent) {
       // 有价格字段，但报价对象核对不上 → **拒绝采纳**，不得据此说"已核实"
       itemNotes.push(
-        `官方响应**未通过报价对象核对**（${verdict?.detail ?? '无明细'}）：不采纳该金额，标记为「未核实实付」`,
+        `官方响应**未通过报价对象核对**（${verdict?.detail ?? '无明细'}）：不采纳该金额`,
       );
-      if (fallback && item.price !== null) {
-        effectivePrice = item.price;
-        priceSource = 'menu';
+      if (adj) {
+        effectivePrice = adj.cents;
+        priceSource = sourceOfAdjusted(adj);
+        priceBasis = adj.basis;
+        itemNotes.push(`金额改按**调整后菜单价**推算（${adj.basis}）——**未核实实付**，亦**未确认可售**`);
+      } else {
+        itemNotes.push('调整后菜单价无法推算（替换价差不全）⇒ **价格未知**，不参与预算判定');
       }
-    } else if (fallback && item.price !== null) {
-      effectivePrice = item.price;
-      priceSource = 'menu';
-      itemNotes.push(
-        `官方计价未取得（${attempt.receipt.errorCode ?? '未知原因'}），暂以菜单价计——**未核实实付**`,
-      );
+    } else if (adj) {
+      effectivePrice = adj.cents;
+      priceSource = sourceOfAdjusted(adj);
+      priceBasis = adj.basis;
+      if (adj.adjustment === 0) {
+        itemNotes.push(
+          `官方计价未取得（${attempt.receipt.errorCode ?? '未知原因'}），暂以菜单价计——**未核实实付**`,
+        );
+      } else {
+        itemNotes.push(
+          `官方计价未取得（${attempt.receipt.errorCode ?? '未知原因'}），金额按**调整后菜单价**推算（${adj.basis}）` +
+            `——**不是官方实付，也未确认可售**，且**已把已知价差计入预算判定**`,
+        );
+      }
     } else {
-      itemNotes.push('无价格数据，无法做预算判定');
+      itemNotes.push(
+        '价格未知：官方计价未取得，且替换价差**不完整**（无从推算调整后菜单价）——不参与预算判定，也不列为可购买方案',
+      );
     }
 
     const overByCents =
-      effectivePrice === null ? Number.POSITIVE_INFINITY : Math.max(0, effectivePrice - budgetCents);
+      unavailable || effectivePrice === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, effectivePrice - budgetCents);
 
     done++;
     options.onProgress?.(done, candidates.length);
@@ -539,9 +701,11 @@ export async function confirmPrices(
       item,
       quote: attempt.quote,
       receipt: attempt.receipt,
-      effectivePrice,
-      priceSource,
-      withinBudget: effectivePrice !== null && effectivePrice <= budgetCents,
+      effectivePrice: unavailable ? null : effectivePrice,
+      priceSource: unavailable ? 'menu' : priceSource,
+      ...(unavailable || priceBasis === undefined ? {} : { priceBasis }),
+      unavailable,
+      withinBudget: !unavailable && effectivePrice !== null && effectivePrice <= budgetCents,
       overByCents,
       notes: itemNotes,
       verified,
@@ -560,11 +724,35 @@ export async function confirmPrices(
   await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length || 1) }, worker));
 
   const results = priced.filter((p): p is PricedCandidate => p !== undefined);
-  const within = results.filter((p) => p.withinBudget);
+
+  // ⚠️ v3.7.1 复评 P1：**可行集先做可售性与价格可知性分流**，再谈预算与排序。
+  //    不可售者不是"备选"，价格未知者也不是"预算内"——两者都不得进入方案池。
+  const unavailableOnes = results.filter((p) => p.unavailable);
+  const unknownPriceOnes = results.filter((p) => !p.unavailable && p.effectivePrice === null);
+  const feasible = results.filter((p) => !p.unavailable && p.effectivePrice !== null);
+
+  const excluded: ExcludedCandidate[] = [
+    ...unavailableOnes.map((p) => ({
+      name: p.item.name,
+      code: p.item.code,
+      kind: 'unavailable' as const,
+      detail:
+        `官方判定该组成不可售（${p.receipt.businessCode === undefined ? '' : `业务码 ${p.receipt.businessCode}：`}` +
+        `${p.receipt.errorMessage ?? '无说明'}）`,
+    })),
+    ...unknownPriceOnes.map((p) => ({
+      name: p.item.name,
+      code: p.item.code,
+      kind: 'unknown-price' as const,
+      detail: '官方计价未取得，且替换价差不全 ⇒ 调整后菜单价无法推算（**不用原菜单价充数**）',
+    })),
+  ];
+
+  const within = feasible.filter((p) => p.withinBudget);
 
   let nearestOver: PricedCandidate | null = null;
-  if (within.length === 0 && results.length > 0) {
-    const overable = results.filter((p) => Number.isFinite(p.overByCents));
+  if (within.length === 0 && feasible.length > 0) {
+    const overable = feasible.filter((p) => Number.isFinite(p.overByCents));
     nearestOver = overable.slice().sort((a, b) => a.overByCents - b.overByCents)[0] ?? null;
     if (nearestOver) {
       notes.push(
@@ -572,6 +760,20 @@ export async function confirmPrices(
           `超出 ¥${toYuan(nearestOver.overByCents as Cents).toFixed(2)}——**需你明确同意后才纳入考虑**。`,
       );
     }
+  }
+
+  if (unavailableOnes.length > 0) {
+    notes.push(
+      `有 ${unavailableOnes.length} 个候选被官方**判定不可售** ⇒ 已移出可行集（不作方案、也不作备选）：` +
+        unavailableOnes.map((p) => `「${p.item.name}」`).join('、'),
+    );
+  }
+  if (unknownPriceOnes.length > 0) {
+    notes.push(
+      `有 ${unknownPriceOnes.length} 个候选**价格未知**（官方计价未取得且替换价差不全）` +
+        `⇒ **未纳入预算判定**，也不列为可购买方案：` +
+        unknownPriceOnes.map((p) => `「${p.item.name}」`).join('、'),
+    );
   }
 
   const unverified = results.filter((p) => !p.verified).length;
@@ -587,7 +789,7 @@ export async function confirmPrices(
   const summary = summarizePricing(results);
   notes.push(summary.note);
 
-  return { within, nearestOver, notes, receipts: results.map((r) => r.receipt), summary };
+  return { within, nearestOver, notes, receipts: results.map((r) => r.receipt), summary, excluded };
 }
 
 // ─────────────────── 请求事实汇总（评审 R6） ───────────────────
@@ -779,25 +981,71 @@ export function applyRequote(
   requote: RequoteResult,
   budgetCents: Cents,
 ): PricedCandidate {
-  const effectivePrice = requote.price ?? candidate.effectivePrice;
-  const hadOfficialPrice = candidate.priceSource === 'official' || candidate.quote !== null;
-  const priceSource: PriceSource = requote.verified
-    ? 'official'
-    : hadOfficialPrice
-      ? 'official-unverified'
-      : 'menu';
+  // ① 复核被官方**明确否定可售性** ⇒ 撤下（连备选都不作）
+  if (classifyPriceFailure(requote.receipt) === 'unavailable') {
+    return {
+      ...candidate,
+      quote: requote.quote ?? candidate.quote,
+      receipt: requote.receipt,
+      effectivePrice: null,
+      priceSource: 'menu',
+      priceBasis: undefined,
+      unavailable: true,
+      verified: false,
+      withinBudget: false,
+      overByCents: Number.POSITIVE_INFINITY,
+      notes: [
+        ...candidate.notes,
+        `最终复核：官方判定该组成**不可售**` +
+          `（${requote.receipt.businessCode === undefined ? '' : `业务码 ${requote.receipt.businessCode}：`}` +
+          `${requote.receipt.errorMessage ?? '无说明'}）⇒ 撤下，不作为可购买方案`,
+      ],
+    };
+  }
+
+  // ② 常规路径：复核价优先；复核未通过时按「初次是否拿到过经核对的官方价」降级
+  const hadVerifiedOfficial = candidate.priceSource === 'official';
+  const adj = adjustedMenuPriceOf(candidate.item);
+  let effectivePrice = requote.price ?? candidate.effectivePrice;
+  let priceSource: PriceSource;
+  let priceBasis = candidate.priceBasis;
+
+  if (requote.verified) {
+    priceSource = 'official';
+  } else if (hadVerifiedOfficial) {
+    // 初次报价**已经过对象核对**（含 roundList 的官方组成价），仅复核未成功 ⇒ 沿用并降级
+    priceSource = 'official-unverified';
+  } else if (adj) {
+    // 官方从未核实过该组成：只能用**调整后菜单价**（含已知价差），绝不退回未调整菜单价
+    effectivePrice = adj.cents;
+    priceSource = sourceOfAdjusted(adj);
+    priceBasis = adj.basis;
+  } else {
+    // 价差不全 ⇒ 价格未知：撤出预算内（不退回原菜单价充数）
+    effectivePrice = null;
+    priceSource = 'menu';
+    priceBasis = undefined;
+  }
+
   const overByCents =
     effectivePrice === null ? Number.POSITIVE_INFINITY : Math.max(0, effectivePrice - budgetCents);
   const failureNote = requote.verified
     ? `最终复核：${requote.note}`
-    : `最终复核：${requote.note}` +
-      `（沿用初次金额时仅作参考——**未核实，不代表当前实付**，来源标记 ${priceSource}）`;
+    : effectivePrice === null
+      ? `最终复核：${requote.note}（**价格未知**：官方未核实且替换价差不全 ⇒ 不参与预算判定）`
+      : hadVerifiedOfficial
+        ? `最终复核：${requote.note}` +
+          `（沿用初次官方金额仅作参考——**未核实，不代表当前实付**，来源标记 ${priceSource}）`
+        : `最终复核：${requote.note}（金额为**调整后菜单价**${priceBasis ? `：${priceBasis}` : ''}` +
+          `——**不是官方实付，也未确认可售**，来源标记 ${priceSource}）`;
   return {
     ...candidate,
     quote: requote.quote ?? candidate.quote,
     receipt: requote.receipt,
     effectivePrice,
     priceSource,
+    ...(priceBasis === undefined ? {} : { priceBasis }),
+    unavailable: false,
     verified: requote.verified,
     withinBudget: effectivePrice !== null && effectivePrice <= budgetCents,
     overByCents,
