@@ -16,7 +16,7 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { loadFixtures, fixtureDetailLoader } from '../src/fixtures.ts';
 import { NutritionMatcher } from '../src/matching.ts';
@@ -262,9 +262,19 @@ async function score(csvPath: string): Promise<void> {
 }
 
 // ─────────────── CLI ───────────────
+//
+// ⚠️ 入口守卫（2026-10-16 补）：本文件被 `tests/v34-review-regression.test.ts` **import 了 `classify`**。
+// 原实现把 `await generate()` 放在模块顶层，于是**只要有人 import 本模块，就会执行整轮抽样并写出 CSV**
+// ——表现为「跑一次 `npm test` 就在项目目录之外凭空多出一个 `outputs/人工审核样本-*.csv`」，
+// 且横幅文字会混进测试输出。这与「测试只读、不写盘」的承诺相悖。
+// 故与 `src/cli.ts` 用同一套判据：**仅当本文件是被直接执行的入口时才跑主流程**。
+const isDirectRun =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 const scoreIdx = process.argv.indexOf('--score');
-if (scoreIdx >= 0) {
+if (!isDirectRun) {
+  // 被 import：只导出函数供复用，**不产生任何副作用**
+} else if (scoreIdx >= 0) {
   const p = process.argv[scoreIdx + 1];
   if (!p) {
     console.error('用法：node scripts/review-samples.ts --score <已填的 csv 路径>');
