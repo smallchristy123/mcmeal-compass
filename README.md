@@ -260,6 +260,7 @@ mcmeal-compass/
 │   ├── secrets-scan.mjs         # 凭据扫描（工作树 + git 历史；白名单排除占位/测试假值）
 │   ├── check-placeholders.mjs   # 占位字样与非法时间戳检查（可 --dir 追加扫描待打包目录）
 │   ├── sync-version.mjs         # **版本唯一源**同步：由 package.json 生成 src/version.ts（--check 并入 gate）
+│   ├── source-identity.mjs      # **源码身份材料**：git bundle + tree id + 逐文件 blob/sha256 清单（交付用，只读仓库）
 │   └── independent-online-verify.mjs  # 独立在线复核（串行低负载；仓库与交付包根目录均可直接运行）
 └── tests/                       # 单元测试（node:test，**359 个用例**）
     ├── v3-acceptance.test.ts    # v3 验收要求（R1–R10，**只可迁移、不可删改**）
