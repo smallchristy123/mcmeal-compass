@@ -155,10 +155,14 @@ print("② 包内清单：%d 条（被哈希载荷文件）" % len(lines))
 #    更糟的是白名单**不含 `source/SOURCE-IDENTITY.txt`**——正是它要防的那个文件。
 SCOPE_NOTE = ("纳入：包内全部 .md ＋ 包根与 source/ 下的 .txt/.log；"
               "不扫：online-evidence/、sample-outputs/、human-review/（机器产物与原始响应）"
-              "及 SHA256SUMS.txt（机器生成的哈希清单）")
+              "及 SHA256SUMS.txt（机器生成的哈希清单）。"
+              "只检「像文件」的形式：末段含扩展名或以 / 结尾（裸标识如协议方法名不检）")
 ROOT_ENTRIES = set(os.listdir(STAGE)) | {"SHA256SUMS.txt"}
 REL_PATH_RE = re.compile(r"(?<![\w./-])([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)")
-HIST_DOC_RE = re.compile(r"^(REVIEW-RESPONSE|SIGNOFF)-v(\d+\.\d+\.\d+)-[0-9-]+\.md$")
+HIST_DOC_RE = re.compile(r"^(REVIEW-RESPONSE|SIGNOFF)-v(\d+(?:\.\d+)*)-[0-9-]+\.md$")
+# ⚠️ 版本段数须允许 1~N 段（v3.3 / v3.6.1 / v3.7.4 都算）——
+#    初版写成 `\d+\.\d+\.\d+` 只认三段，于是 `v3.3`~`v3.6` 四份历史账**漏了豁免**，
+#    被当成"本版文档"扫了。虽未误报，但**规则没有做到它声明的事**，故当场修正。
 NON_NARRATIVE_DIRS = ("online-evidence/", "sample-outputs/", "human-review/")
 PATH_CHECK_ALLOW = {
     "online-evidence/history-secrets-scan.json":
@@ -180,6 +184,19 @@ def is_narrative_doc(rel):
     return False
 
 
+def looks_like_file_path(p):
+    """只检「像文件」的形式——**末段含扩展名，或以 `/` 结尾（目录）**。
+
+    缘起（v3.7.4 封包首次实跑）：gate 日志里有 MCP 协议方法名 `tools/call`，
+    被正则当成路径去查，而包根恰好有 `tools/` 目录 ⇒ **误报缺失、打包中止**。
+    协议方法名（`tools/call`、`tools/list`…）是裸标识，不是路径，
+    故以「末段是否含 `.`」区分；目录形式（以 `/` 结尾）仍照检。
+    """
+    if p.endswith("/"):
+        return True
+    return "." in p.rstrip("/").split("/")[-1]
+
+
 def scan_doc_paths(doc_list):
     """返回 (命中处数, 缺失列表)——正式扫描与负向自测**共用同一实现**"""
     hits, missing = 0, []
@@ -188,6 +205,8 @@ def scan_doc_paths(doc_list):
         for m in REL_PATH_RE.finditer(text):
             p = m.group(1).rstrip(".,;:、。）)】」'\"`")
             if p.startswith("..") or p.split("/")[0] not in ROOT_ENTRIES:
+                continue
+            if not looks_like_file_path(p):
                 continue
             if p in PATH_CHECK_ALLOW:
                 continue
