@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 672" width="1000" height="672" role="img" aria-labelledby="t2 d2">
+  <title id="t2">每个数字都能追到出处：营养可信度四档与价源四态</title>
+  <desc id="d2">上方为营养可信度 A/B/C/D 四档的判定依据；下方为金额的来源四态与两个明确出口（价格未知、官方判定不可售）。</desc>
+
+  <defs>
+</defs>
+
+  <rect x="0" y="0" width="1000" height="672" style="fill:#ffffff" />
+
+  <text  x="500" y="42" text-anchor="middle" style="font:600 23px 'PingFang SC','Microsoft YaHei','Segoe UI',system-ui,sans-serif; fill:#0f172a">每个数字都能追到出处</text>
+  <text x="500" y="66" text-anchor="middle" style="font:400 13px 'PingFang SC','Microsoft YaHei','Segoe UI',system-ui,sans-serif; fill:#64748b">不知道的，就写「不知道」——不填 0、不省略、不四舍五入成一个好看的数</text>
+
+  <!-- 营养可信度 -->
+  <text x="24" y="102" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#334155; letter-spacing:.02em">营养数值的可信度（A / B / C / D）</text>
+
+  <!-- A -->
+  <rect x="24" y="116" width="226" height="122" rx="10" fill="#dcfce7" stroke="#86efac" stroke-width="1.4"/>
+  <text x="44" y="152" fill="#166534" style="font:700 22px ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace">A</text>
+  <text x="44" y="178" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">官方字段直配</text>
+  <text x="44" y="200" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">该餐品在官方营养表里</text>
+  <text x="44" y="218" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">有对应条目，直接采用</text>
+
+  <!-- B -->
+  <rect x="266" y="116" width="226" height="122" rx="10" fill="#dbeafe" stroke="#93c5fd" stroke-width="1.4"/>
+  <text x="286" y="152" fill="#1e40af" style="font:700 22px ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace">B</text>
+  <text x="286" y="178" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">官方组件求和</text>
+  <text x="286" y="200" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">套餐（官方无整份营养）</text>
+  <text x="286" y="218" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">逐件匹配后累加得到</text>
+
+  <!-- C -->
+  <rect x="508" y="116" width="226" height="122" rx="10" fill="#fef9c3" stroke="#fde047" stroke-width="1.4"/>
+  <text x="528" y="152" fill="#854d0e" style="font:700 22px ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace">C</text>
+  <text x="528" y="178" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">部分组件缺失</text>
+  <text x="528" y="200" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">有组件匹配不上，缺口</text>
+  <text x="528" y="218" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">如实留白，不按 0 计</text>
+
+  <!-- D -->
+  <rect x="750" y="116" width="226" height="122" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.4"/>
+  <text x="770" y="152" fill="#475569" style="font:700 22px ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace">D</text>
+  <text x="770" y="178" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">无法核实</text>
+  <text x="770" y="200" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">关键字段缺失或异常</text>
+  <text x="770" y="218" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">整体不可信，明说不可信</text>
+
+  <line x1="24" y1="268" x2="976" y2="268" stroke="#e2e8f0" stroke-width="1.4"/>
+
+  <!-- 价源四态 -->
+  <text x="24" y="300" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#334155; letter-spacing:.02em">金额的来源（价源四态，每个金额必属其一）</text>
+
+  <rect x="24" y="314" width="226" height="136" rx="10" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.6"/>
+  <text x="44" y="340" fill="#1e3a8a" style="font:400 12px ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace">official</text>
+  <text x="44" y="364" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">官方已核实</text>
+  <text x="44" y="386" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">官方计价成功，且报价</text>
+  <text x="44" y="404" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">对象与请求逐项对上</text>
+  <text x="44" y="430" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">→ 可直接说「这就是实付」</text>
+
+  <rect x="266" y="314" width="226" height="136" rx="10" fill="#e0e7ff" stroke="#a5b4fc" stroke-width="1.6"/>
+  <text x="286" y="340" fill="#3730a3" style="font:400 12px ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace">official-unverified</text>
+  <text x="286" y="364" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">官方价，但未复核</text>
+  <text x="286" y="386" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">曾取得经核对的官方价，</text>
+  <text x="286" y="404" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">最终复核未成功</text>
+  <text x="286" y="430" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">→ 沿用旧价，标明未核实</text>
+
+  <rect x="508" y="314" width="226" height="136" rx="10" fill="#fef3c7" stroke="#fcd34d" stroke-width="1.6"/>
+  <text x="528" y="340" fill="#92400e" style="font:400 12px ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace">menu-adjusted-unverified</text>
+  <text x="528" y="364" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">菜单价 + 已知价差</text>
+  <text x="528" y="386" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">官方计价未取得，但每一</text>
+  <text x="528" y="404" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">处替换的价差都已知</text>
+  <text x="528" y="430" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">→ 照常参与预算判定</text>
+
+  <rect x="750" y="314" width="226" height="136" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.6"/>
+  <text x="770" y="340" fill="#334155" style="font:400 12px ui-monospace,'Cascadia Mono',Menlo,Consolas,monospace">menu</text>
+  <text x="770" y="364" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">就是菜单价</text>
+  <text x="770" y="386" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">没有任何替换，金额即</text>
+  <text x="770" y="404" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">菜单上标着的价格</text>
+  <text x="770" y="430" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">→ 仍然不是「实付」</text>
+
+  <!-- 两个出口 -->
+  <text x="24" y="484" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#334155; letter-spacing:.02em">算不出来的时候，只有两个出口（绝不硬凑）</text>
+
+  <rect x="24" y="498" width="462" height="88" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <text x="44" y="526" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">出口一 · 价格未知</text>
+  <text x="44" y="548" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">替换价差不全 ⇒ 金额标「未知」，<tspan font-weight="600">不进预算内方案</tspan>，单列候选</text>
+  <text x="44" y="568" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">不用原菜单价充数，也不假装它便宜</text>
+
+  <rect x="502" y="498" width="474" height="88" rx="10" fill="#fee2e2" stroke="#fca5a5" stroke-width="1.6"/>
+  <text x="522" y="526" style="font:600 13px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">出口二 · 官方判定不可售（如业务码 60006）</text>
+  <text x="522" y="548" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">直接移出可行集：<tspan font-weight="600">不作方案，也不作「最接近预算」的备选</tspan></text>
+  <text x="522" y="568" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">买不到就是买不到，不是「价格未核实」</text>
+
+  <text x="500" y="628" text-anchor="middle" style="font:600 12.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#0f172a">两条底线：未知不伪装为 0　·　未发起 ≠ 失败（离线读夹具记为「0 次真实调用」，不记成成功）</text>
+  <text x="500" y="650" text-anchor="middle" style="font:400 11.5px 'PingFang SC','Microsoft YaHei',system-ui,sans-serif; fill:#475569">本图仅表达判定规则，不含示意性数值；各态的实证见 docs/DECISION_NOTES.md 与 tests/ 下的回归用例</text>
+</svg>
