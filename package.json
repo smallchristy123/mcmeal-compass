@@ -1,6 +1,6 @@
 {
   "name": "mcmeal-compass",
-  "version": "3.7.3",
+  "version": "3.7.4",
   "private": true,
   "description": "麦麦营养管家 · McMeal Compass —— 基于麦当劳中国官方 MCP 的可解释营养搭配与实时计价工具",
   "type": "module",

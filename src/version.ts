@@ -6,4 +6,4 @@
  * 两边漂移会被 `npm run verify:version`（并入 `npm run gate`）当场拦下。
  */
 export const NAME = "mcmeal-compass";
-export const VERSION = "3.7.3";
+export const VERSION = "3.7.4";

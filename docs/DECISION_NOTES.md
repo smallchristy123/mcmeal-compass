@@ -761,3 +761,79 @@ v3.7.1 的 `tests/substitution-pricing.test.ts` 把「小杯玉米杯（`4437`�
 | ±¥0 非默认替换 | `basis=菜单价（组成与默认一致）` · 无 `compositionChanged` | `compositionChanged=true` · `basis=菜单价 ＋ 小杯玉米杯 ±¥0.00` |
 
 **性质**：`resolved`（两条 P2 + 两条 P3 均已修，并各自带回归测试与前后对照）。
+
+### 九、v3.7.3 复评（允许签收）→ v3.7.4 维护版（O9/O10/O11）
+
+**复评结论**：允许签收 v3.7.3；上一轮四项（P2-1/P2-2/P3-1/P3-2）验收通过。
+同时点出**一条 P2 边界**与**一条交付工程缺口**，并把既有 O9 一并点名。
+本版**不扩功能**，只做这三件。
+
+#### O10 `isDefault` 三态判据不一致（复评 P2-边界）
+
+- **病灶（已现场核实）**：同一字段被两处**各自解释、且解释相反**——
+  `roundListOf` 用 `every(c => c.isDefault !== false)`（`undefined` 归**默认**），
+  `adjustedMenuPriceOf` 用 `if (c.isDefault === true) continue`（`undefined` 归**替换**）。
+  而 `isDefault` 在 `analyze.ts` 是**可选字段**，故库直接调用方可造出
+  「官方请求不带组成、降级价却按组成变化」的两套事实。
+- **修法**：新增**唯一判据** `defaultStateOf()`，三态
+  `true ⇒ default` / `false ⇒ swapped` / `undefined ⇒ unknown`；
+  `roundListOf` 与 `adjustedMenuPriceOf` **一律经由它**，不再各自解释。
+- **`unknown` 的处置（关键）**：两侧对同一个「未知」**都保持沉默**——
+  · 请求侧：不构成「明确替换」⇒ **不送组成**（不凭空改变请求）；
+  · 价格侧：**拒绝推算**（`adjustedMenuPriceOf` 返回 `null` = 价格未知，不参与硬预算）。
+  ⇒ 不再出现「一边说不算变、一边按变算钱」。
+- **顺带补齐诊断**：新增 `adjustedMenuPriceFailureOf()`，推算失败按**真实原因**
+  （无菜单价 / 默认态未知 / 价差缺失）分别措辞——原先一律写「替换价差不全」，
+  遇到「默认态未知」就成了**叙述与实况背离**。
+- **不矫枉过正的对照**：官方价与「能否推算」无关，`unknown` **不连累官方价**；
+  全部明确默认时行为与 v3.7.3 逐字一致（覆盖面零回归）。
+
+#### O11 文档路径门槛覆盖范围与声明不符（复评 P3/P2-交付工程）
+
+- **病灶（已现场核实，比复评说的更难看）**：v3.7.3 新加的这道门，`CURRENT_DOCS` 手写 6 份，
+  **不含 `source/SOURCE-IDENTITY.txt`**——正是它要防的那个文件；
+  而 `package-root-run.log` 却写着「扫 **.md/.txt/.log** 内的包根相对路径」。
+  **写门槛的人，写出了背离门槛的话**（铁律 1 在同一版内复发）。
+- **修法**：
+  1. **不写文件名白名单**：范围由**目录 + 扩展名规则**从实际清单推导；
+  2. **纳入**：包内全部 `.md` ＋ 包根与 `source/` 下的 `.txt`/`.log` ⇒ **含根因文件**；
+  3. **不扫**：`online-evidence/`、`sample-outputs/`、`human-review/`（机器产物与原始响应，
+     其内容里的「路径样字符串」不是包内引用）与 `SHA256SUMS.txt`（机器生成的哈希清单）；
+  4. **豁免**：非本版的历史 `REVIEW-RESPONSE-*` / `SIGNOFF-*`（历史账，按当年结构书写）；
+  5. **负向自测**：正式扫描前注入一个必不存在的包根相对路径（`source/not-exist-<rand>.json`），
+     门槛**必须**报缺失；抓不到 ⇒ **中止打包**（证明这道门还活着，而不是走过场）；
+  6. **声明范围 = 实际范围**：打印与 manifest 只写「纳入 N 份 → 实际扫描 M 份」，
+     不再出现「所有」字样；manifest 增 `documentPathGate.scope` 原文与 `negativeSelfTest` 结果。
+- **口径为什么不能是「所有 .txt」**：包内有 **84 份在线原始响应** `.txt` 与 3 份 sample 输出，
+  它们是机器产物而非叙述文档；宣称「扫所有 .txt」既做不到、也无意义。**能做多少就说多少。**
+
+#### O9 评审脚手架未同源（复评建议项）
+
+- 5 个脚手架（`mcmeal-v3-acceptance-harness.mjs`、`mcmeal-v3-additional-probes-2026-10-12.mjs`、
+  `modern-shape.mjs`、`price-raw.mjs`、`ratelimit-probe.mjs`）已纳入
+  **`scripts/review-scaffolds/`**，由**同一套包根一致性断言**管理。
+- **一处有价值的发现**：`modern-shape.mjs` / `price-raw.mjs` / `ratelimit-probe.mjs` 内部写的是
+  `import ... from '../../src/mcp-client.ts'` —— 这个相对深度**恰好**只在
+  `scripts/review-scaffolds/` 下成立。即：当年把包根当存放处，本就不对；
+  复评建议的那个路径，才是它们**真正能跑**的位置。入仓库后已实测 `../../src` 可达。
+- 包根仍保留一份**同字节留档**（供第三方核对字节），文档中写明「可运行位置在源码包内该目录」。
+
+#### 打包脚本入仓库（复评 O11 建议 5）
+
+- `scripts/release/pack.py`：**参数化**（`--base --ws --release --date --node`），
+  **不含任何执行方私有路径**，第三方可复跑。
+- 包根 `tools/pack-release.py` 为其**同字节副本**，由流水线自身断言一致（不一致即中止打包）。
+
+#### 反例前后对照（同一探针 `scripts/v374-edge-probe.ts`，只依赖两版共有导出）
+
+| 场景 | v3.7.3（`4ce1616`） | v3.7.4 |
+|---|---|---|
+| A 全部 `isDefault=undefined` | 不送组成（roundList=0）**却**按替换算 ¥30、`compositionChanged=true` ⇒ **两侧矛盾** | roundList=0 + **价格未知**（`null`）⇒ 一致 |
+| B 混态（1 明确替换 + 1 未知） | roundList=4，¥30 | roundList=4，**`null`**（含未知项即整份拒算） |
+| C 全部明确默认（对照） | roundList=0，¥28，change=false | **逐字相同**（覆盖面零回归） |
+| D 官方布尔原样（+¥2） | roundList=4，¥30，change=true | **逐字相同**（正常路径零回归） |
+
+> A 的「前」与复评报告第五节给出的观察逐项吻合（`roundListOf` 长度 0 / `basket` 不发组成 /
+> `adjustedMenuPriceOf().compositionChanged=true` / 金额＝菜单价＋¥2）。
+
+**性质**：O10 `resolved`；O11 `resolved`（覆盖面 + 负向自测 + 表述三处同修）；O9 `resolved`（入仓库）。

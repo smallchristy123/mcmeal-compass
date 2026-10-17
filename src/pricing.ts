@@ -21,7 +21,7 @@
 
 import { createHash } from 'node:crypto';
 
-import type { AnalyzedItem } from './analyze.ts';
+import type { AnalyzedItem, ItemComponent } from './analyze.ts';
 import type { PriceResult } from './schema.ts';
 import { toYuan, type Cents } from './money.ts';
 
@@ -223,7 +223,7 @@ export interface PricingOutcome {
 export interface ExcludedCandidate {
   name: string;
   code: string;
-  /** `unavailable`＝官方判定不可售；`unknown-price`＝官方计价未取得且替换价差不全 */
+  /** `unavailable`＝官方判定不可售；`unknown-price`＝官方计价未取得、且无法按已知信息推算 */
   kind: 'unavailable' | 'unknown-price';
   detail: string;
 }
@@ -290,6 +290,32 @@ export function basketOf(item: AnalyzedItem): PriceLine[] {
 }
 
 /**
+ * 组件「是否默认项」的**唯一判据**（v3.7.4，复评 O10）。
+ *
+ * ⚠️ 此前两处各解释一次 `isDefault`，且**解释相反**：
+ *   · `roundListOf` 用 `every(c => c.isDefault !== false)` ⇒ `undefined` 归**默认**（不带组成）；
+ *   · `adjustedMenuPriceOf` 用 `if (c.isDefault === true) continue` ⇒ `undefined` 归**替换**（按替换算价）。
+ * `isDefault` 在 `analyze.ts` 是**可选字段**，故库直接调用方可能构造出「官方请求不带组成、
+ * 降级价却按组成变化」的两套事实。今起**两处一律经由本函数**。
+ *
+ * 三态口径：
+ *   · `true`      ⇒ `default`：明确默认项（价差恒为 0，菜单价已含）；
+ *   · `false`     ⇒ `swapped`：明确替换项（**含 ±¥0**，组成已变）；
+ *   · `undefined` ⇒ `unknown`：**未知**——既不当替换去推算价格，也不假装它是默认。
+ *     「未知」的处置：`roundListOf` **不**据此认为组成变了（不凭空送组成），
+ *     `adjustedMenuPriceOf` **拒绝推算**（返回 `null` = 价格未知，不参与硬预算）。
+ *     两条都对同一个「未知」保持沉默并留痕，**不产生互相矛盾的两套事实**。
+ */
+export type ComponentDefaultState = 'default' | 'swapped' | 'unknown';
+
+/** 组件默认态的三态判据——**全仓唯一**，不得另有第二处解释 `isDefault` */
+export function defaultStateOf(c: ItemComponent): ComponentDefaultState {
+  if (c.isDefault === true) return 'default';
+  if (c.isDefault === false) return 'swapped';
+  return 'unknown';
+}
+
+/**
  * 由结构化组件构造官方 `roundList`——**这是「组成变了，计价请求也跟着变」的落点**。
  *
  * `round` 取**轮次 id 的字符串**（实测：传名称会被服务端拒为 500，见 `RoundLine` 注释）。
@@ -307,8 +333,12 @@ export function roundListOf(item: AnalyzedItem): RoundLine[] {
    * **带上 roundList 反被服务端以 `60006 商品已售罄或不可售` 拒绝**（BFF四宫格小食盘双人餐、
    * 全明星双人分享餐八件套 两个套餐复现）。一律带上会**凭空损失官方核价覆盖面**，
    * 那是拿覆盖面换一致性，得不偿失。
+   *
+   * v3.7.4（复评 O10）：判据改为 `defaultStateOf`——只有**明确**的 `swapped` 才算组成变了；
+   * `unknown` 不给结论（不送组成），与 `adjustedMenuPriceOf` 的「拒绝推算」同源。
    */
-  if (comps.every((c) => c.isDefault !== false)) return [];
+  if (!comps.some((c) => defaultStateOf(c) === 'swapped')) return [];
+
 
   const byRound = new Map<number, { code: string; quantity: number }[]>();
   for (const c of comps) {
@@ -523,18 +553,35 @@ export interface AdjustedMenuPrice {
  * 但**证据语义错了**：官方计价失败时，用户无从看出一套**替换过、且可售性未确认**的组成。
  * 现改为：**非默认项（含 ±¥0）一律列出**，`compositionChanged` 只由 `isDefault` 决定。
  */
-export function adjustedMenuPriceOf(item: AnalyzedItem): AdjustedMenuPrice | null {
-  if (item.price === null || !Number.isFinite(item.price)) return null;
+type AdjustedFailure =
+  | { kind: 'no-price'; detail: string }
+  | { kind: 'unknown-default'; detail: string }
+  | { kind: 'missing-diff'; detail: string };
+
+type AdjustedOutcome = { ok: true; value: AdjustedMenuPrice } | { ok: false; reason: AdjustedFailure };
+
+/** 推算核心——**唯一实现**，`adjustedMenuPriceOf` 与诊断函数共用，避免两处口径漂移 */
+function computeAdjusted(item: AnalyzedItem): AdjustedOutcome {
+  if (item.price === null || !Number.isFinite(item.price)) {
+    return { ok: false, reason: { kind: 'no-price', detail: '该候选没有菜单价' } };
+  }
   const comps = item.components ?? [];
   let adjustment = 0;
   let compositionChanged = false;
   const parts: string[] = [];
   const missing: string[] = [];
+  const unknown: string[] = [];
 
   for (const c of comps) {
+    const state = defaultStateOf(c);
     // 默认项：其相对默认的价差恒为 0（菜单价已含），无须价差数据
-    if (c.isDefault === true) continue;
-    // 走到这里 ⇒ 这是一个**非默认项**：组成已变，**与价差是否为 0 无关**
+    if (state === 'default') continue;
+    // ⚠️ 默认态未知 ⇒ **不得**当其是替换去推算（复评 O10）：记下并整份拒算
+    if (state === 'unknown') {
+      unknown.push(`「${c.roundName} → ${c.choiceName}」`);
+      continue;
+    }
+    // 明确的替换项：组成已变，**与价差是否为 0 无关**
     compositionChanged = true;
     const qty = c.quantity > 0 ? c.quantity : 1;
     if (typeof c.diffPrice !== 'number' || !Number.isFinite(c.diffPrice)) {
@@ -548,15 +595,65 @@ export function adjustedMenuPriceOf(item: AnalyzedItem): AdjustedMenuPrice | nul
     parts.push(`${c.choiceName}${qty > 1 ? `×${qty}` : ''} ${sign}¥${abs.toFixed(2)}`);
   }
 
-  if (missing.length > 0) return null;
+  // 「未知」优先于「缺失」：前者更根本（连是不是替换都不知道）
+  if (unknown.length > 0) {
+    return { ok: false, reason: { kind: 'unknown-default', detail: unknown.join('、') } };
+  }
+  if (missing.length > 0) {
+    return { ok: false, reason: { kind: 'missing-diff', detail: missing.join('、') } };
+  }
 
   const cents = (item.price + adjustment) as Cents;
   return {
-    cents,
-    adjustment: adjustment as Cents,
-    compositionChanged,
-    basis: compositionChanged ? `菜单价 ＋ ${parts.join(' ＋ ')}` : '菜单价（组成与默认一致）',
+    ok: true,
+    value: {
+      cents,
+      adjustment: adjustment as Cents,
+      compositionChanged,
+      basis: compositionChanged ? `菜单价 ＋ ${parts.join(' ＋ ')}` : '菜单价（组成与默认一致）',
+    },
   };
+}
+
+/**
+ * 按「菜单价 ＋ Σ(已明确替换项的官方价差 × 数量)」推算调整后菜单价。
+ *
+ * **只在每一处替换都「明确是替换」且「拿到了价差」时才给值**；否则返回 `null`
+ * （`null` = 价格未知，调用方**不得**退回原菜单价去过硬预算）。
+ * 组成未变（全部明确默认）时返回金额即菜单价、`adjustment=0`、`compositionChanged=false`。
+ *
+ * ⚠️ v3.7.3 复评 P2-2：**±¥0 的非默认替换同样是替换**。
+ * 旧实现用「价差合计是否为 0」代替「组成是否变化」，于是「小食 → 小杯玉米杯（`diffPrice=0`）」
+ * 被写成「菜单价（组成与默认一致）」、价源退回普通 `menu`。金额（¥28）没算错，
+ * 但**证据语义错了**：官方计价失败时，用户无从看出一套**替换过、且可售性未确认**的组成。
+ * 现改为：**非默认项（含 ±¥0）一律列出**，`compositionChanged` 只由 `isDefault` 决定。
+ *
+ * ⚠️ v3.7.4 复评 O10：`isDefault` 走**三态**（见 `defaultStateOf`）——
+ * `undefined` 是「未知」，**拒绝推算**（返回 `null`），不再默默当作替换去算钱。
+ */
+export function adjustedMenuPriceOf(item: AnalyzedItem): AdjustedMenuPrice | null {
+  const r = computeAdjusted(item);
+  return r.ok ? r.value : null;
+}
+
+/**
+ * 推算失败的**人可读原因**——供 `confirmPrices` / `requoteFinal` 落诊断。
+ *
+ * 缘起（v3.7.4 复评 O11 同类病）：原先「推不出来」一律写成「替换价差不全」，
+ * 但**默认态未知**是另一回事，混着写就是**叙述与实况背离**。今按 `computeAdjusted` 的
+ * 真实原因分别措辞，**同一事实只给一套说法**。
+ */
+export function adjustedMenuPriceFailureOf(item: AnalyzedItem): string | null {
+  const r = computeAdjusted(item);
+  if (r.ok) return null;
+  switch (r.reason.kind) {
+    case 'no-price':
+      return '该候选没有菜单价可作推算基数';
+    case 'unknown-default':
+      return `${r.reason.detail} 的**默认态未知**（\`isDefault\` 缺失）⇒ 无法判断是否替换，**不推算金额**`;
+    case 'missing-diff':
+      return `${r.reason.detail} 的替换价差缺失`;
+  }
 }
 
 /**
@@ -713,7 +810,7 @@ export async function confirmPrices(
     const basketOk = verdict?.status === 'matched';
 
     // 官方失败时的降级依据：**调整后菜单价**（菜单价 ＋ 已知替换价差）。
-    // null ⇒ 替换价差不全 ⇒ 价格未知（**绝不退回原菜单价充数**）。
+    // null ⇒ 无法推算（价差缺失 / 默认态未知）⇒ 价格未知（**绝不退回原菜单价充数**）。
     const adj = fallback ? adjustedMenuPriceOf(item) : null;
     const failureKind = classifyPriceFailure(attempt.receipt);
 
@@ -757,7 +854,9 @@ export async function confirmPrices(
             : '金额改按**菜单价**计（无替换项）——**未核实实付**',
         );
       } else {
-        itemNotes.push('调整后菜单价无法推算（替换价差不全）⇒ **价格未知**，不参与预算判定');
+        itemNotes.push(
+          `调整后菜单价无法推算（${adjustedMenuPriceFailureOf(item) ?? '原因未明'}）⇒ **价格未知**，不参与预算判定`,
+        );
       }
     } else if (adj) {
       // 走到这里含两种情形：① 失败回执（含残留报价——其报价已被上面的不变量检查否掉）；
@@ -837,7 +936,9 @@ export async function confirmPrices(
       name: p.item.name,
       code: p.item.code,
       kind: 'unknown-price' as const,
-      detail: '官方计价未取得，且替换价差不全 ⇒ 调整后菜单价无法推算（**不用原菜单价充数**）',
+      detail:
+        `官方计价未取得，且调整后菜单价无法推算（${adjustedMenuPriceFailureOf(p.item) ?? '原因未明'}）` +
+        ' ⇒ **不用原菜单价充数**',
     })),
   ];
 
@@ -863,7 +964,7 @@ export async function confirmPrices(
   }
   if (unknownPriceOnes.length > 0) {
     notes.push(
-      `有 ${unknownPriceOnes.length} 个候选**价格未知**（官方计价未取得且替换价差不全）` +
+      `有 ${unknownPriceOnes.length} 个候选**价格未知**（官方计价未取得，且无法按已知价差推算）` +
         `⇒ **未纳入预算判定**，也不列为可购买方案：` +
         unknownPriceOnes.map((p) => `「${p.item.name}」`).join('、'),
     );
@@ -1121,7 +1222,7 @@ export function applyRequote(
     priceSource = sourceOfAdjusted(adj);
     priceBasis = adj.basis;
   } else {
-    // 价差不全 ⇒ 价格未知：撤出预算内（不退回原菜单价充数）
+    // 推算不出来（价差缺失 / 默认态未知）⇒ 价格未知：撤出预算内（不退回原菜单价充数）
     effectivePrice = null;
     priceSource = 'menu';
     priceBasis = undefined;
@@ -1132,7 +1233,8 @@ export function applyRequote(
   const failureNote = requote.verified
     ? `最终复核：${requote.note}`
     : effectivePrice === null
-      ? `最终复核：${requote.note}（**价格未知**：官方未核实且替换价差不全 ⇒ 不参与预算判定）`
+      ? `最终复核：${requote.note}（**价格未知**：官方未核实，且调整后菜单价无法推算` +
+        `（${adjustedMenuPriceFailureOf(candidate.item) ?? '原因未明'}）⇒ 不参与预算判定）`
       : hadVerifiedOfficial
         ? `最终复核：${requote.note}` +
           `（沿用初次官方金额仅作参考——**未核实，不代表当前实付**，来源标记 ${priceSource}）`
