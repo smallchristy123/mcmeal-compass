@@ -40,6 +40,7 @@ import {
   type PriceSource,
 } from './pricing.ts';
 import { freshnessOf, localIsoNow } from './freshness.ts';
+import { clipDisplay, padDisplay, padStartDisplay } from './text-width.ts';
 import { VERSION } from './version.ts';
 import { pathToFileURL } from 'node:url';
 
@@ -506,7 +507,7 @@ export function renderText(
   const maxC = Math.max(...Object.values(summary.byConfidence), 1);
   for (const c of ['A', 'B', 'C', 'D'] as Confidence[]) {
     const n = summary.byConfidence[c];
-    L.push(`  ${CONF_LABEL[c].padEnd(14, ' ')} ${String(n).padStart(4)}  ${bar(n, maxC)}`);
+    L.push(`  ${padDisplay(CONF_LABEL[c], 14)} ${String(n).padStart(4)}  ${bar(n, maxC)}`);
   }
   const pct = summary.total === 0 ? 0 : (summary.usable / summary.total) * 100;
   L.push(`  ${'─'.repeat(34)}`);
@@ -526,11 +527,26 @@ export function renderText(
 
   const sortLabel = { kcal: '热量', protein: '蛋白质', price: '价格' }[opts.sort];
   L.push(`【有官方营养依据的条目 · 按${sortLabel}升序 · 前 ${Math.min(opts.top, usable.length)} 条】`);
-  L.push('   #  名称                        价格       热量      蛋白   脂肪   碳水   级别');
+  L.push(
+    '   #  ' +
+      padDisplay('名称', 24) +
+      padStartDisplay('价格', 8) +
+      '  ' +
+      padStartDisplay('热量', 10) +
+      '  ' +
+      padStartDisplay('蛋白', 6) +
+      '  ' +
+      padStartDisplay('脂肪', 5) +
+      '  ' +
+      padStartDisplay('碳水', 5) +
+      '   ' +
+      '级别',
+  );
   usable.slice(0, opts.top).forEach((it, i) => {
-    const name = it.name.length > 22 ? `${it.name.slice(0, 21)}…` : it.name;
+    // 按**显示列**补/截：中文在终端占 2 列，`padEnd` 按码元补必然错位（O12）
+    const name = clipDisplay(it.name, 22);
     L.push(
-      `  ${String(i + 1).padStart(2)}  ${name.padEnd(24)}` +
+      `  ${String(i + 1).padStart(2)}  ${padDisplay(name, 24)}` +
         `${(it.price === null ? '—' : formatCents(it.price)).padStart(8)}  ` +
         `${fmtCell(it.totals.energyKcal.value, ' kcal', it.totals.energyKcal.complete).padStart(10)}  ` +
         `${fmtCell(it.totals.protein.value, 'g', it.totals.protein.complete).padStart(6)}  ` +
